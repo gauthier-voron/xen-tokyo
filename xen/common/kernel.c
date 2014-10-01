@@ -225,6 +225,19 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     switch ( cmd )
     {
+
+    /*
+     * Special case for manual triggering
+     * Should not be in any definitive version
+     * The dom0 counterpart is in tools/trigger/
+     * TODO: remove as soon as possible
+     */
+    case -1:
+    {
+        printk("Xen Activation Point\n");
+        return 0;
+    }
+
     case XENVER_version:
     {
         return (xen_major_version() << 16) | xen_minor_version();

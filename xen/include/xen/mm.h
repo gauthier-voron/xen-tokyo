@@ -371,4 +371,11 @@ int guest_remove_page(struct domain *d, unsigned long gmfn);
 /* TRUE if the whole page at @mfn is of the requested RAM type(s) above. */
 int page_is_ram_type(unsigned long mfn, unsigned long mem_type);
 
+
+#include <xen/config.h>
+
+#ifdef BIGOS_MEMORY_MOVE
+long memory_move(void);
+#endif
+
 #endif /* __XEN_MM_H__ */

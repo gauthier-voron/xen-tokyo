@@ -108,4 +108,7 @@
 #define FLASK_AVC_STATS 1
 #endif
 
+/* Enable page move across NUMA nodes */
+#define BIGOS_MEMORY_MOVE
+
 #endif /* __XEN_CONFIG_H__ */

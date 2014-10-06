@@ -978,6 +978,38 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 }
 
 #ifdef BIGOS_MEMORY_MOVE
+static unsigned long __memory_move_get_mfn(struct domain *d, unsigned long gfn,
+                                           struct page_info **pg)
+{
+    struct page_info *page;
+    unsigned long mfn;
+#ifdef CONFIG_X86
+    p2m_type_t p2mt;
+
+    /* Shared pages cannot be moved */
+    mfn = mfn_x(get_gfn_unshare(d, gfn, &p2mt));
+    if ( p2m_is_shared(p2mt) )
+        goto fail;
+#else /* !CONFIG_X86 */
+    mfn = gmfn_to_mfn(d, gfn);
+#endif
+
+    if ( unlikely(!mfn_valid(mfn)) )
+        goto fail;
+
+    page = mfn_to_page(mfn);
+    if ( unlikely(steal_page(d, page, MEMF_no_refcount)) )
+        goto fail;
+
+    put_gfn(d, gfn);
+    *pg = page;
+    return mfn;
+
+fail:
+    put_gfn(d, gfn);
+    return INVALID_MFN;
+}
+
 static long __memory_move(struct xen_memory_exchange *exch, unsigned long *in,
     unsigned long *out)
 {
@@ -989,7 +1021,7 @@ static long __memory_move(struct xen_memory_exchange *exch, unsigned long *in,
     unsigned int  memflags = 0;
     long          rc = 0;
     struct domain *d;
-    struct page_info *page;
+    struct page_info *page = NULL;
 
     printk("%s (%s:%d)\n", "Pre check", __FILE__, __LINE__);
 
@@ -1076,48 +1108,14 @@ static long __memory_move(struct xen_memory_exchange *exch, unsigned long *in,
 
             for ( k = 0; k < (1UL << exch->in.extent_order); k++ )
             {
-#ifdef CONFIG_X86
-                p2m_type_t p2mt;
-
-                /* Shared pages cannot be exchanged */
-                mfn = mfn_x(get_gfn_unshare(d, gmfn + k, &p2mt));
-
-                printk("[%lu][%lu][%lu] mfn = %lx (%s:%d)\n", i, j, k, mfn,
-                       __FILE__, __LINE__);
-
-                if ( p2m_is_shared(p2mt) )
-                {
-                    printk("[%lu][%lu][%lu] Shared (%s:%d)\n", i, j, k,
-                           __FILE__, __LINE__);
-                    put_gfn(d, gmfn + k);
-                    rc = -ENOMEM;
-                    goto fail; 
-                }
-#else /* !CONFIG_X86 */
-                mfn = gmfn_to_mfn(d, gmfn + k);
-#endif
+                mfn = __memory_move_get_mfn(d, gmfn + k, &page);
                 if ( unlikely(!mfn_valid(mfn)) )
                 {
-                    printk("[%lu][%lu][%lu] Invalid (%s:%d)\n", i, j, k,
-                           __FILE__, __LINE__);
-                    put_gfn(d, gmfn + k);
-                    rc = -EINVAL;
-                    goto fail;
-                }
-
-                page = mfn_to_page(mfn);
-
-                if ( unlikely(steal_page(d, page, MEMF_no_refcount)) )
-                {
-                    printk("[%lu][%lu][%lu] Unstealable (%s:%d)\n", i, j, k,
-                           __FILE__, __LINE__);
-                    put_gfn(d, gmfn + k);
                     rc = -EINVAL;
                     goto fail;
                 }
 
                 page_list_add(page, &in_chunk_list);
-                put_gfn(d, gmfn + k);
             }
         }
 

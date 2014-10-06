@@ -236,6 +236,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     {
         printk("Xen Activation Point\n");
         printk("memory move = %p\n", memory_move);
+        memory_move();
         return 0;
     }
 

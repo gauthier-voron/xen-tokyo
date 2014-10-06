@@ -978,9 +978,9 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 }
 
 #ifdef BIGOS_MEMORY_MOVE
-static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
+static long __memory_move(struct xen_memory_exchange *exch, unsigned long *in,
+    unsigned long *out)
 {
-    struct xen_memory_exchange exch;
     PAGE_LIST_HEAD(in_chunk_list);
     PAGE_LIST_HEAD(out_chunk_list);
     unsigned long in_chunk_order, out_chunk_order;
@@ -991,61 +991,57 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
     struct domain *d;
     struct page_info *page;
 
-    if ( copy_from_guest(&exch, arg, 1) )
-        return -EFAULT;
+    printk("%s (%s:%d)\n", "Pre check", __FILE__, __LINE__);
 
     /* Various sanity checks. */
-    if ( (exch.nr_exchanged > exch.in.nr_extents) ||
+    if ( (exch->nr_exchanged > exch->in.nr_extents) ||
          /* Input and output domain identifiers match? */
-         (exch.in.domid != exch.out.domid) ||
+         (exch->in.domid != exch->out.domid) ||
          /* Extent orders are sensible? */
-         (exch.in.extent_order > MAX_ORDER) ||
-         (exch.out.extent_order > MAX_ORDER) ||
+         (exch->in.extent_order > MAX_ORDER) ||
+         (exch->out.extent_order > MAX_ORDER) ||
          /* Sizes of input and output lists do not overflow a long? */
-         ((~0UL >> exch.in.extent_order) < exch.in.nr_extents) ||
-         ((~0UL >> exch.out.extent_order) < exch.out.nr_extents) ||
+         ((~0UL >> exch->in.extent_order) < exch->in.nr_extents) ||
+         ((~0UL >> exch->out.extent_order) < exch->out.nr_extents) ||
          /* Sizes of input and output lists match? */
-         ((exch.in.nr_extents << exch.in.extent_order) !=
-          (exch.out.nr_extents << exch.out.extent_order)) )
+         ((exch->in.nr_extents << exch->in.extent_order) !=
+          (exch->out.nr_extents << exch->out.extent_order)) )
     {
         rc = -EINVAL;
         goto fail_early;
     }
 
-    if ( !guest_handle_okay(exch.in.extent_start, exch.in.nr_extents) ||
-         !guest_handle_okay(exch.out.extent_start, exch.out.nr_extents) )
-    {
-        rc = -EFAULT;
-        goto fail_early;
-    }
-
     /* Only privileged guests can allocate multi-page contiguous extents. */
     if ( !multipage_allocation_permitted(current->domain,
-                                         exch.in.extent_order) ||
+                                         exch->in.extent_order) ||
          !multipage_allocation_permitted(current->domain,
-                                         exch.out.extent_order) )
+                                         exch->out.extent_order) )
     {
         rc = -EPERM;
         goto fail_early;
     }
 
-    if ( exch.in.extent_order <= exch.out.extent_order )
+    if ( exch->in.extent_order <= exch->out.extent_order )
     {
-        in_chunk_order  = exch.out.extent_order - exch.in.extent_order;
+        in_chunk_order  = exch->out.extent_order - exch->in.extent_order;
         out_chunk_order = 0;
     }
     else
     {
         in_chunk_order  = 0;
-        out_chunk_order = exch.in.extent_order - exch.out.extent_order;
+        out_chunk_order = exch->in.extent_order - exch->out.extent_order;
     }
 
-    d = rcu_lock_domain_by_any_id(exch.in.domid);
+    printk("%s (%s:%d)\n", "Pre lock check", __FILE__, __LINE__);
+
+    d = rcu_lock_domain_by_any_id(exch->in.domid);
     if ( d == NULL )
     {
         rc = -ESRCH;
         goto fail_early;
     }
+
+    printk("%s (%s:%d)\n", "Pre XSM", __FILE__, __LINE__);
 
     rc = xsm_memory_exchange(XSM_TARGET, d);
     if ( rc )
@@ -1056,44 +1052,43 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
 
     memflags |= MEMF_bits(domain_clamp_alloc_bitsize(
         d,
-        XENMEMF_get_address_bits(exch.out.mem_flags) ? :
+        XENMEMF_get_address_bits(exch->out.mem_flags) ? :
         (BITS_PER_LONG+PAGE_SHIFT)));
-    memflags |= MEMF_node(XENMEMF_get_node(exch.out.mem_flags));
+    memflags |= MEMF_node(XENMEMF_get_node(exch->out.mem_flags));
 
-    for ( i = (exch.nr_exchanged >> in_chunk_order);
-          i < (exch.in.nr_extents >> in_chunk_order);
+    printk("Main loop starting (%s:%d)\n",  __FILE__, __LINE__);
+
+    for ( i = (exch->nr_exchanged >> in_chunk_order);
+          i < (exch->in.nr_extents >> in_chunk_order);
           i++ )
     {
-        if ( i != (exch.nr_exchanged >> in_chunk_order) &&
-             hypercall_preempt_check() )
-        {
-            exch.nr_exchanged = i << in_chunk_order;
-            rcu_unlock_domain(d);
-            if ( __copy_field_to_guest(arg, &exch, nr_exchanged) )
-                return -EFAULT;
-            return hypercall_create_continuation(
-                __HYPERVISOR_memory_op, "lh", XENMEM_exchange, arg);
-        }
+        printk("[%lu] Second loop starting (%s:%d)\n", i, __FILE__, __LINE__);
 
         /* Steal a chunk's worth of input pages from the domain. */
         for ( j = 0; j < (1UL << in_chunk_order); j++ )
         {
-            if ( unlikely(__copy_from_guest_offset(
-                &gmfn, exch.in.extent_start, (i<<in_chunk_order)+j, 1)) )
-            {
-                rc = -EFAULT;
-                goto fail;
-            }
+            gmfn = in[(i << in_chunk_order) + j];
 
-            for ( k = 0; k < (1UL << exch.in.extent_order); k++ )
+            printk("[%lu][%lu] gmfn = %lx (%s:%d)\n", i, j, gmfn, __FILE__,
+                   __LINE__);
+            printk("[%lu][%lu] Third loop starting (%s:%d)\n", i, j, __FILE__,
+                   __LINE__);
+
+            for ( k = 0; k < (1UL << exch->in.extent_order); k++ )
             {
 #ifdef CONFIG_X86
                 p2m_type_t p2mt;
 
                 /* Shared pages cannot be exchanged */
                 mfn = mfn_x(get_gfn_unshare(d, gmfn + k, &p2mt));
+
+                printk("[%lu][%lu][%lu] mfn = %lx (%s:%d)\n", i, j, k, mfn,
+                       __FILE__, __LINE__);
+
                 if ( p2m_is_shared(p2mt) )
                 {
+                    printk("[%lu][%lu][%lu] Shared (%s:%d)\n", i, j, k,
+                           __FILE__, __LINE__);
                     put_gfn(d, gmfn + k);
                     rc = -ENOMEM;
                     goto fail; 
@@ -1103,6 +1098,8 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
 #endif
                 if ( unlikely(!mfn_valid(mfn)) )
                 {
+                    printk("[%lu][%lu][%lu] Invalid (%s:%d)\n", i, j, k,
+                           __FILE__, __LINE__);
                     put_gfn(d, gmfn + k);
                     rc = -EINVAL;
                     goto fail;
@@ -1112,6 +1109,8 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
 
                 if ( unlikely(steal_page(d, page, MEMF_no_refcount)) )
                 {
+                    printk("[%lu][%lu][%lu] Unstealable (%s:%d)\n", i, j, k,
+                           __FILE__, __LINE__);
                     put_gfn(d, gmfn + k);
                     rc = -EINVAL;
                     goto fail;
@@ -1125,7 +1124,11 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
         /* Allocate a chunk's worth of anonymous output pages. */
         for ( j = 0; j < (1UL << out_chunk_order); j++ )
         {
-            page = alloc_domheap_pages(NULL, exch.out.extent_order, memflags);
+            page = alloc_domheap_pages(NULL, exch->out.extent_order, memflags);
+
+            printk("[%lu][%lu] new page = %lx (%s:%d)\n", i, j,
+                   page_to_mfn(page), __FILE__, __LINE__);
+
             if ( unlikely(page == NULL) )
             {
                 rc = -ENOMEM;
@@ -1151,13 +1154,15 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
             /* Pages were unshared above */
             BUG_ON(SHARED_M2P(gfn));
             guest_physmap_remove_page(d, gfn, mfn, 0);
+            printk("[%lu][%lu] deassociate gfn = %lx to mfn = %lx (%s:%d)\n",
+                   i, j, gfn, mfn, __FILE__, __LINE__);
             put_page(page);
         }
 
         /* Assign each output page to the domain. */
         for ( j = 0; (page = page_list_remove_head(&out_chunk_list)); ++j )
         {
-            if ( assign_pages(d, page, exch.out.extent_order,
+            if ( assign_pages(d, page, exch->out.extent_order,
                               MEMF_no_refcount) )
             {
                 unsigned long dec_count;
@@ -1170,9 +1175,9 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
                  * that has been assigned, it should be covered by
                  * domain_relinquish_resources().
                  */
-                dec_count = (((1UL << exch.in.extent_order) *
+                dec_count = (((1UL << exch->in.extent_order) *
                               (1UL << in_chunk_order)) -
-                             (j * (1UL << exch.out.extent_order)));
+                             (j * (1UL << exch->out.extent_order)));
 
                 spin_lock(&d->page_alloc_lock);
                 drop_dom_ref = (dec_count &&
@@ -1182,36 +1187,29 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
                 if ( drop_dom_ref )
                     put_domain(d);
 
-                free_domheap_pages(page, exch.out.extent_order);
+                free_domheap_pages(page, exch->out.extent_order);
                 goto dying;
             }
 
-            if ( __copy_from_guest_offset(&gpfn, exch.out.extent_start,
-                                          (i << out_chunk_order) + j, 1) )
-            {
-                rc = -EFAULT;
-                continue;
-            }
+            gpfn = out[(i << out_chunk_order) + j];
 
             mfn = page_to_mfn(page);
-            guest_physmap_add_page(d, gpfn, mfn, exch.out.extent_order);
+            guest_physmap_add_page(d, gpfn, mfn, exch->out.extent_order);
+
+            printk("[%lu][%lu] associate gpfn = %lx to mfn = %lx (%s:%d)\n",
+                   i, j, gpfn, mfn, __FILE__, __LINE__);
 
             if ( !paging_mode_translate(d) )
             {
-                for ( k = 0; k < (1UL << exch.out.extent_order); k++ )
+                for ( k = 0; k < (1UL << exch->out.extent_order); k++ )
                     set_gpfn_from_mfn(mfn + k, gpfn + k);
-                if ( __copy_to_guest_offset(exch.out.extent_start,
-                                            (i << out_chunk_order) + j,
-                                            &mfn, 1) )
-                    rc = -EFAULT;
+                out[(i << out_chunk_order) + j] = mfn;
             }
         }
         BUG_ON( !(d->is_dying) && (j != (1UL << out_chunk_order)) );
     }
 
-    exch.nr_exchanged = exch.in.nr_extents;
-    if ( __copy_field_to_guest(arg, &exch, nr_exchanged) )
-        rc = -EFAULT;
+    exch->nr_exchanged = exch->in.nr_extents;
     rcu_unlock_domain(d);
     return rc;
 
@@ -1220,6 +1218,8 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
      * chunks succeeded.
      */
  fail:
+    printk("Failure ! (%s:%d)\n", __FILE__, __LINE__);
+
     /* Reassign any input pages we managed to steal. */
     while ( (page = page_list_remove_head(&in_chunk_list)) )
     {
@@ -1232,21 +1232,36 @@ static long __memory_move(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
     rcu_unlock_domain(d);
     /* Free any output pages we managed to allocate. */
     while ( (page = page_list_remove_head(&out_chunk_list)) )
-        free_domheap_pages(page, exch.out.extent_order);
+        free_domheap_pages(page, exch->out.extent_order);
 
-    exch.nr_exchanged = i << in_chunk_order;
+    exch->nr_exchanged = i << in_chunk_order;
 
  fail_early:
-    if ( __copy_field_to_guest(arg, &exch, nr_exchanged) )
-        rc = -EFAULT;
     return rc;
 }
 
-int memory_move(void)
+long memory_move(void)
 {
-    __guest_handle_xen_memory_exchange_t arg = {};
+    struct xen_memory_exchange exch;
+    unsigned long in[1] = {0x100};
+    unsigned long out[1] = {0x100};
+    int ret;
 
-    return __memory_move(arg);
+    exch.nr_exchanged = 0;
+
+    exch.in.domid = 1;
+    exch.in.nr_extents = 1;
+    exch.in.extent_order = 0;
+
+    exch.out.domid = 1;
+    exch.out.nr_extents = 1;
+    exch.out.extent_order = 0;
+    exch.out.mem_flags = 0;
+
+    ret = __memory_move(&exch, in, out);
+    flush_tlb_all();
+
+    return ret;
 }
 #endif /* BIGOS_MEMORY_MOVE */
 

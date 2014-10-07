@@ -1028,7 +1028,6 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
         if ( drop )
             put_domain(d);
 
-        free_domheap_pages(new, 0);
         return -1;
     }
 
@@ -1039,16 +1038,17 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     return 0;
 }
 
-static int __memory_move(int domid, unsigned long *gfns, unsigned long count)
+static unsigned long __memory_move(int domid, unsigned long *gfns,
+                                   unsigned long count)
 {
-    unsigned long i;
     struct domain *d;
+    unsigned long i, moved = 0;
     unsigned int  memflags = 0;
     struct page_info *old = NULL;
     struct page_info *new = NULL;
 
     if ( (d = rcu_lock_domain_by_any_id(domid)) == NULL )
-        goto fail;
+        return 0;
 
     memflags |= MEMF_bits(domain_clamp_alloc_bitsize(
         d, BITS_PER_LONG + PAGE_SHIFT));
@@ -1058,32 +1058,46 @@ static int __memory_move(int domid, unsigned long *gfns, unsigned long count)
     {
         old = __memory_move_steal(d, gfns[i]);
         if ( unlikely(old == NULL) )
-            goto fail_unlock;
+            goto fail_gfn;
 
         new = alloc_domheap_pages(NULL, 0, memflags);
         if ( unlikely(new == NULL) )
-            goto fail_unlock;
+            goto fail_old;
 
         if ( __memory_move_replace(d, gfns[i], old, new) )
-            goto fail_unlock;
+            goto fail_new;
+
+        gfns[i] = INVALID_GFN;
+        moved++;
+        continue;
+
+     fail_new:
+        free_domheap_pages(new, 0);
+     fail_old:
+        put_gfn(d, gfns[i]);
+        if ( assign_pages(d, old, 0, MEMF_no_refcount) )
+            BUG();
+     fail_gfn:
+        continue;
     }
 
     rcu_unlock_domain(d);
-    return 0;
-
- fail_unlock:
-    rcu_unlock_domain(d);
- fail:
-    return -1;
+    return moved;
 }
 
 long memory_move(void)
 {
-    unsigned long gfns[] = {0x100, 0x101, 0x102};
-    int ret;
+    unsigned long old[] = {0x100, 0x10, 0x102};
+    unsigned long gfns[] = {0x100, 0x10, 0x102};
+    unsigned long i, ret;
 
     ret = __memory_move(1, gfns, 3);
     flush_tlb_all();
+
+    printk("moved %lu pages\n", ret);
+    for (i=0; i<3; i++)
+        printk("moved %lx => %s\n", old[i],
+               (gfns[i] == INVALID_GFN) ? "yes" : "no");
 
     return ret;
 }

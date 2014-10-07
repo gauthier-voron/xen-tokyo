@@ -978,10 +978,9 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 }
 
 #ifdef BIGOS_MEMORY_MOVE
-static unsigned long __memory_move_get_mfn(struct domain *d, unsigned long gfn,
-                                           struct page_info **pg)
+static struct page_info*__memory_move_steal(struct domain *d,unsigned long gfn)
 {
-    struct page_info *page;
+    struct page_info *page = NULL;
     unsigned long mfn;
 #ifdef CONFIG_X86
     p2m_type_t p2mt;
@@ -989,171 +988,101 @@ static unsigned long __memory_move_get_mfn(struct domain *d, unsigned long gfn,
     /* Shared pages cannot be moved */
     mfn = mfn_x(get_gfn_unshare(d, gfn, &p2mt));
     if ( p2m_is_shared(p2mt) )
-        goto fail;
+        goto out;
 #else /* !CONFIG_X86 */
     mfn = gmfn_to_mfn(d, gfn);
 #endif
 
     if ( unlikely(!mfn_valid(mfn)) )
-        goto fail;
+        goto out;
 
     page = mfn_to_page(mfn);
     if ( unlikely(steal_page(d, page, MEMF_no_refcount)) )
-        goto fail;
+        page = NULL;
 
+ out:
     put_gfn(d, gfn);
-    *pg = page;
-    return mfn;
-
-fail:
-    put_gfn(d, gfn);
-    return INVALID_MFN;
+    return page;
 }
 
-static int __memory_move(struct xen_memory_exchange *exch, unsigned long *in,
-    unsigned long *out)
+static int __memory_move_replace(struct domain *d, unsigned long gfn,
+                                 struct page_info *old, struct page_info *new)
 {
-    xen_pfn_t     gpfn, gmfn, mfn, gfn;
-    unsigned long i = 0; /* gcc ... */
-    unsigned int  memflags = 0;
-    struct domain *d;
-    struct page_info *in_page = NULL;
-    struct page_info *out_page = NULL;
+    unsigned long old_mfn = page_to_mfn(old), new_mfn = page_to_mfn(new);
+    int drop;
 
-    /* Various sanity checks. */
-    if ( (exch->nr_exchanged > exch->in.nr_extents) ||
-         /* Input and output domain identifiers match? */
-         (exch->in.domid != exch->out.domid) ||
-         /* Sizes of input and output lists match? */
-         (exch->in.nr_extents != exch->out.nr_extents) )
-        goto fail_early;
+    ASSERT(gfn == mfn_to_gmfn(d, old_mfn));
+    ASSERT(old->count_info & _PGC_allocated);
+    ASSERT(new->count_info == 0);
+    ASSERT(!SHARED_M2P(gfn));
 
-    d = rcu_lock_domain_by_any_id(exch->in.domid);
-    if ( d == NULL )
-        goto fail_early;
+    guest_physmap_remove_page(d, gfn, old_mfn, 0);
+    put_page(old);
 
-    if ( xsm_memory_exchange(XSM_TARGET, d) )
+    if ( assign_pages(d, new, 0, MEMF_no_refcount) )
     {
-        rcu_unlock_domain(d);
-        goto fail_early;
+        spin_lock(&d->page_alloc_lock);
+        drop = (!domain_adjust_tot_pages(d, -1));
+        spin_unlock(&d->page_alloc_lock);
+
+        if ( drop )
+            put_domain(d);
+
+        free_domheap_pages(new, 0);
+        return -1;
     }
+
+    guest_physmap_add_page(d, gfn, new_mfn, 0);
+    if ( !paging_mode_translate(d) )
+        set_gpfn_from_mfn(new_mfn, gfn);
+
+    return 0;
+}
+
+static int __memory_move(int domid, unsigned long *gfns, unsigned long count)
+{
+    unsigned long i;
+    struct domain *d;
+    unsigned int  memflags = 0;
+    struct page_info *old = NULL;
+    struct page_info *new = NULL;
+
+    if ( (d = rcu_lock_domain_by_any_id(domid)) == NULL )
+        goto fail;
 
     memflags |= MEMF_bits(domain_clamp_alloc_bitsize(
-        d,
-        XENMEMF_get_address_bits(exch->out.mem_flags) ? :
-        (BITS_PER_LONG+PAGE_SHIFT)));
-    memflags |= MEMF_node(XENMEMF_get_node(exch->out.mem_flags));
+        d, BITS_PER_LONG + PAGE_SHIFT));
+    memflags |= MEMF_node(XENMEMF_get_node(0));
 
-    for ( i = exch->nr_exchanged; i < exch->in.nr_extents; i++ )
+    for (i=0; i<count; i++)
     {
-        gmfn = in[i];
+        old = __memory_move_steal(d, gfns[i]);
+        if ( unlikely(old == NULL) )
+            goto fail_unlock;
 
-        mfn = __memory_move_get_mfn(d, gmfn, &in_page);
-        if ( unlikely(!mfn_valid(mfn)) )
-            goto fail;
+        new = alloc_domheap_pages(NULL, 0, memflags);
+        if ( unlikely(new == NULL) )
+            goto fail_unlock;
 
-        out_page = alloc_domheap_pages(NULL, 0, memflags);
-        if ( unlikely(out_page == NULL) )
-            goto fail;
-
-        if ( !test_and_clear_bit(_PGC_allocated, &in_page->count_info) )
-            BUG();
-        mfn = page_to_mfn(in_page);
-        gfn = mfn_to_gmfn(d, mfn);
-        /* Pages were unshared above */
-        BUG_ON(SHARED_M2P(gfn));
-        guest_physmap_remove_page(d, gfn, mfn, 0);
-        put_page(in_page);
-
-        if ( assign_pages(d, out_page, 0, MEMF_no_refcount) )
-        {
-            unsigned long dec_count;
-            bool_t drop_dom_ref;
-
-            /*
-             * Pages in in_chunk_list is stolen without
-             * decreasing the tot_pages. If the domain is dying when
-             * assign pages, we need decrease the count. For those pages
-             * that has been assigned, it should be covered by
-             * domain_relinquish_resources().
-             */
-            dec_count = 1;
-
-            spin_lock(&d->page_alloc_lock);
-            drop_dom_ref = (dec_count &&
-                            !domain_adjust_tot_pages(d, -dec_count));
-            spin_unlock(&d->page_alloc_lock);
-
-            if ( drop_dom_ref )
-                put_domain(d);
-
-            free_domheap_pages(out_page, 0);
-            goto dying;
-        }
-
-        gpfn = out[i];
-
-        mfn = page_to_mfn(out_page);
-        guest_physmap_add_page(d, gpfn, mfn, 0);
-
-        printk("[%lu] associate gpfn = %lx to mfn = %lx (%s:%d)\n",
-               i, gpfn, mfn, __FILE__, __LINE__);
-
-        if ( !paging_mode_translate(d) )
-        {
-            set_gpfn_from_mfn(mfn, gpfn);
-            out[i] = mfn;
-        }
+        if ( __memory_move_replace(d, gfns[i], old, new) )
+            goto fail_unlock;
     }
 
-    exch->nr_exchanged = exch->in.nr_extents;
     rcu_unlock_domain(d);
     return 0;
 
-    /*
-     * Failed a chunk! Free any partial chunk work. Tell caller how many
-     * chunks succeeded.
-     */
- fail:
-    printk("Failure ! (%s:%d)\n", __FILE__, __LINE__);
-
-    /* Reassign any input pages we managed to steal. */
-    if ( in_page )
-    {
-        put_gfn(d, gmfn);
-        if ( assign_pages(d, in_page, 0, MEMF_no_refcount) )
-            BUG();
-    }
-
- dying:
+ fail_unlock:
     rcu_unlock_domain(d);
-    /* Free any output pages we managed to allocate. */
-    if ( out_page )
-        free_domheap_pages(out_page, 0);
-
-    exch->nr_exchanged = i;
-
- fail_early:
+ fail:
     return -1;
 }
 
 long memory_move(void)
 {
-    struct xen_memory_exchange exch;
-    unsigned long in[] = {0x100, 0x101, 0x102};
-    unsigned long out[] = {0x100, 0x101, 0x102};
+    unsigned long gfns[] = {0x100, 0x101, 0x102};
     int ret;
 
-    exch.nr_exchanged = 0;
-
-    exch.in.domid = 1;
-    exch.in.nr_extents = 3;
-
-    exch.out.domid = 1;
-    exch.out.nr_extents = 3;
-    exch.out.mem_flags = 0;
-
-    ret = __memory_move(&exch, in, out);
+    ret = __memory_move(1, gfns, 3);
     flush_tlb_all();
 
     return ret;

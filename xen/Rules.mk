@@ -1,4 +1,3 @@
-
 #
 # If you change any of these configuration options then you must
 # 'make clean' before rebuilding.
@@ -29,6 +28,21 @@ endif
 override TARGET_SUBARCH  := $(XEN_TARGET_ARCH)
 override TARGET_ARCH     := $(shell echo $(XEN_TARGET_ARCH) | \
                               sed -e 's/x86.*/x86/' -e s'/arm\(32\|64\)/arm/g')
+
+# Compilation Verbosity
+V ?= 1
+
+ifeq ($(V),1)
+  define cmd-print
+    @echo '$1'
+  endef
+endif
+
+ifneq ($(V),2)
+  GNUMAKEFLAGS += --no-print-directory
+  Q := @
+endif
+
 
 TARGET := $(BASEDIR)/xen
 
@@ -128,12 +142,14 @@ $(obj-bin-y): CFLAGS := $(filter-out -flto,$(CFLAGS))
 
 built_in.o: $(obj-y)
 ifeq ($(obj-y),)
-	$(CC) $(CFLAGS) -c -x c /dev/null -o $@
+	$(call cmd-print,  CC      $@)
+	$(Q)$(CC) $(CFLAGS) -c -x c /dev/null -o $@
 else
 ifeq ($(lto),y)
 	$(LD_LTO) -r -o $@ $^
 else
-	$(LD) $(LDFLAGS) -r -o $@ $^
+	$(call cmd-print,  LD      $@)
+	$(Q)$(LD) $(LDFLAGS) -r -o $@ $^
 endif
 endif
 
@@ -149,22 +165,27 @@ endif
 FORCE:
 
 %/built_in.o: FORCE
-	$(MAKE) -f $(BASEDIR)/Rules.mk -C $* built_in.o
+	$(call cmd-print,  MAKE    $*)
+	$(Q)$(MAKE) -f $(BASEDIR)/Rules.mk -C $* built_in.o
 
 %/built_in_bin.o: FORCE
-	$(MAKE) -f $(BASEDIR)/Rules.mk -C $* built_in_bin.o
+	$(call cmd-print,  MAKE    $*)
+	$(Q)$(MAKE) -f $(BASEDIR)/Rules.mk -C $* built_in_bin.o
 
 .PHONY: clean
 clean:: $(addprefix _clean_, $(subdir-all))
 	rm -f *.o *~ core $(DEPS)
 _clean_%/: FORCE
-	$(MAKE) -f $(BASEDIR)/Rules.mk -C $* clean
+	$(call cmd-print,  MAKE    $*)
+	$(Q)$(MAKE) -f $(BASEDIR)/Rules.mk -C $* clean
 
 %.o: %.c Makefile
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(call cmd-print,  CC      $@)
+	$(Q)$(CC) $(CFLAGS) -c $< -o $@
 
 %.o: %.S Makefile
-	$(CC) $(AFLAGS) -c $< -o $@
+	$(call cmd-print,  CC      $@)
+	$(Q)$(CC) $(AFLAGS) -c $< -o $@
 
 SPECIAL_DATA_SECTIONS := rodata $(foreach n,1 2 4 8,rodata.str1.$(n)) \
 			 $(foreach r,rel rel.ro,data.$(r).local)

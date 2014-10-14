@@ -978,6 +978,90 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 }
 
 #ifdef BIGOS_MEMORY_MOVE
+/*
+ * Contains the gfns which *may be* write protected while their are copied to
+ * another location.
+ * This information should be used by the VMEXIT PGFAULT-like handler to
+ * perform a short-term wait until the gfn has been copied.
+ */
+static DEFINE_SPINLOCK(memory_moved_spinlock);
+static DEFINE_SPINLOCK(memory_moved_waiter);
+static unsigned long  memory_moved_gfns_size = 0;
+static unsigned long *memory_moved_gfns = NULL;
+static struct domain *memory_moved_domain = NULL;
+
+
+int is_memory_moved_gfn(struct domain *d, unsigned long gfn, int wait)
+{
+    unsigned long i;
+
+    spin_lock(&memory_moved_spinlock);
+
+    if (d != memory_moved_domain)
+        goto out;
+
+    for (i=0; i<memory_moved_gfns_size; i++)
+        if ( memory_moved_gfns[i] == gfn )
+        {
+            spin_unlock(&memory_moved_spinlock);
+
+            /*
+             * When set_memory_moved_gfns() is called, it lock
+             * memory_moved_waiter.
+             * So the spin_lock() here blocks until clear_memory_moved_gfns()
+             * is called and unlock the waiter.
+             * Then immediately unlock the waiter to allow other blocked cpus
+             * to continue.
+             */
+            if (wait) {
+                spin_lock(&memory_moved_waiter);
+                spin_unlock(&memory_moved_waiter);
+            }
+
+            return 1;
+        }
+
+out:
+    spin_unlock(&memory_moved_spinlock);
+    return 0;
+}
+
+void set_memory_moved_gfns(struct domain *d, unsigned long *gfns,
+                           unsigned long size)
+{
+    ASSERT(memory_moved_gfns == NULL);
+    ASSERT(memory_moved_gfns_size == 0);
+    ASSERT(memory_moved_domain == NULL);
+
+    spin_lock(&memory_moved_spinlock);
+
+    memory_moved_gfns = gfns;
+    memory_moved_gfns_size = size;
+    memory_moved_domain = d;
+
+    spin_lock(&memory_moved_waiter);
+
+    spin_unlock(&memory_moved_spinlock);
+}
+
+void clear_memory_moved_gfns(void)
+{
+    ASSERT(memory_moved_gfns != NULL);
+    ASSERT(memory_moved_gfns_size > 0);
+    ASSERT(memory_moved_domain != NULL);
+
+    spin_lock(&memory_moved_spinlock);
+
+    memory_moved_gfns = NULL;
+    memory_moved_gfns_size = 0;
+    memory_moved_domain = NULL;
+
+    spin_unlock(&memory_moved_waiter);
+
+    spin_unlock(&memory_moved_spinlock);
+}
+
+
 static struct page_info*__memory_move_steal(struct domain *d,unsigned long gfn)
 {
     struct page_info *page = NULL;
@@ -1009,15 +1093,17 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
                                  struct page_info *old, struct page_info *new)
 {
     unsigned long old_mfn = page_to_mfn(old), new_mfn = page_to_mfn(new);
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    p2m_type_t t;
+    p2m_access_t a;
     int drop;
 
     ASSERT(gfn == mfn_to_gmfn(d, old_mfn));
     ASSERT(old->count_info & _PGC_allocated);
     ASSERT(new->count_info == 0);
+    ASSERT(mfn_valid(new_mfn));
+    ASSERT(mfn_valid(old_mfn));
     ASSERT(!SHARED_M2P(gfn));
-
-    guest_physmap_remove_page(d, gfn, old_mfn, 0);
-    put_page(old);
 
     if ( assign_pages(d, new, 0, MEMF_no_refcount) )
     {
@@ -1031,7 +1117,17 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
         return -1;
     }
 
+    p2m->get_entry(p2m, gfn, &t, &a, 0, NULL);
+    p2m->set_entry(p2m, gfn, _mfn(old_mfn), 0, t, p2m_access_rx);
+    flush_tlb_one_all(gfn);
+
+    copy_domain_page(new_mfn, old_mfn);
+
     guest_physmap_add_page(d, gfn, new_mfn, 0);
+    flush_tlb_one_all(gfn);
+
+    put_page(old);
+
     if ( !paging_mode_translate(d) )
         set_gpfn_from_mfn(new_mfn, gfn);
 
@@ -1052,6 +1148,8 @@ static unsigned long __memory_move(int domid, unsigned long *gfns,
 
     memflags = MEMF_bits(domain_clamp_alloc_bitsize(
                              d, BITS_PER_LONG + PAGE_SHIFT));
+
+    set_memory_moved_gfns(d, gfns, count);
 
     for (i=0; i<count; i++)
     {
@@ -1082,6 +1180,8 @@ static unsigned long __memory_move(int domid, unsigned long *gfns,
         continue;
     }
 
+    clear_memory_moved_gfns();
+
     rcu_unlock_domain(d);
     return moved;
 }
@@ -1094,7 +1194,6 @@ long memory_move(void)
     unsigned long i, ret;
 
     ret = __memory_move(1, gfns, nodes, 3);
-    flush_tlb_all();
 
     printk("moved %lu pages\n", ret);
     for (i=0; i<3; i++)

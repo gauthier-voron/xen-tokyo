@@ -375,6 +375,28 @@ int page_is_ram_type(unsigned long mfn, unsigned long mem_type);
 #include <xen/config.h>
 
 #ifdef BIGOS_MEMORY_MOVE
+/*
+ * Look if a given gfn is currently moved and if so return 1, otherwise, return
+ * 0. If the wait argument is true, and the gfn is currently moved, then wait
+ * it is totally moved before to return 1.
+ */
+int is_memory_moved_gfn(struct domain *d, unsigned long gfn, int wait);
+
+/*
+ * Set the array of currently moved gfns and its size.
+ * The function clear_memory_moved_gfns() should be called between two calls to
+ * this function.
+ */
+void set_memory_moved_gfns(struct domain *d, unsigned long *gfns,
+                           unsigned long size);
+
+/*
+ * Clean the array of currently moved gfns and its size.
+ * The function set_memory_moved_gfns() should be called between two calls to
+ * this function.
+ */
+void clear_memory_moved_gfns(void);
+
 long memory_move(void);
 #endif
 

@@ -234,9 +234,51 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
      */
     case -1:
     {
+        unsigned long i, mega, mega_to_move;
+        unsigned long last_failure = ~(0UL);
+        unsigned long gfns[256];
+        unsigned long nodes[256];
+        unsigned long count = 0;
+
         printk("Xen Activation Point\n");
-        printk("memory move = %p\n", memory_move);
-        memory_move();
+
+        mega_to_move = 2000;
+
+        printk("moving %lu megabytes\n", mega_to_move);
+        for (mega=0; mega<mega_to_move; mega++) {
+            for (i=0; i<256; i++) {
+                gfns[i] = mega * 256 + i;
+                nodes[i] = 0;
+            }
+
+            memory_move(1, gfns, nodes, 256);
+            for (i=0; i<256; i++)
+                if (gfns[i] != INVALID_GFN)
+                {
+                    if ( last_failure == ~(0UL) )
+                        last_failure = gfns[i];
+                }
+                else
+                {
+                    if ( last_failure != ~(0UL) )
+                    {
+                        printk("failure from %lx to %lx\n", last_failure,
+                               (i == 0) ? mega * 256 - 1 : gfns[i-1]);
+                        last_failure = ~(0UL);
+                    }
+                    count++;
+                }
+        }
+
+        if ( last_failure != ~(0UL) )
+        {
+            printk("failure from %lx to %lx\n", last_failure,
+                   (i == 0) ? mega * 256 - 1 : gfns[i-1]);
+            last_failure = ~(0UL);
+        }
+
+        printk("moved %lu pages\n", count);
+
         return 0;
     }
 

@@ -397,7 +397,17 @@ void set_memory_moved_gfns(struct domain *d, unsigned long *gfns,
  */
 void clear_memory_moved_gfns(void);
 
-long memory_move(void);
+/*
+ * Move, for a specified domain, the pages with the given gfn to the specified
+ * nodes. The move can be done concurrently with other operations.
+ * <future>If a node has to be moved on a node it already is, nothing is done
+ * for this page.</future>
+ * Return the count of actually moved pages (since some pages cannot be moved).
+ * Now: the actually moved gfn are set in the gfns array to INVALID_MFN
+ * Finally: const *gnfs // nodes is filled with the new node of each gfn
+ */
+unsigned long memory_move(int domid, unsigned long *gfns, unsigned long *nodes,
+                          unsigned long count);
 #endif
 
 #endif /* __XEN_MM_H__ */

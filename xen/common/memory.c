@@ -997,7 +997,7 @@ int is_memory_moved_gfn(struct domain *d, unsigned long gfn, int wait)
 
     spin_lock(&memory_moved_spinlock);
 
-    if (d != memory_moved_domain)
+    if ( d != memory_moved_domain )
         goto out;
 
     for (i=0; i<memory_moved_gfns_size; i++)
@@ -1013,7 +1013,7 @@ int is_memory_moved_gfn(struct domain *d, unsigned long gfn, int wait)
              * Then immediately unlock the waiter to allow other blocked cpus
              * to continue.
              */
-            if (wait) {
+            if ( wait ) {
                 spin_lock(&memory_moved_waiter);
                 spin_unlock(&memory_moved_waiter);
             }
@@ -1062,6 +1062,14 @@ void clear_memory_moved_gfns(void)
 }
 
 
+/*
+ * Try to destroy all links of a given page for a specified domain, leaving it
+ * with only one reference to its counter and not assigned anymore to the
+ * domain.
+ * In case of success, returns the associated page_info and take a reference
+ * on the gfn.
+ * Otherwise, retur NULL and no reference is taken.
+ */
 static struct page_info*__memory_move_steal(struct domain *d,unsigned long gfn)
 {
     struct page_info *page = NULL;
@@ -1070,25 +1078,35 @@ static struct page_info*__memory_move_steal(struct domain *d,unsigned long gfn)
     p2m_type_t p2mt;
 
     /* Shared pages cannot be moved */
-    mfn = mfn_x(get_gfn_unshare(d, gfn, &p2mt));
+    mfn = mfn_x(get_gfn_unshare(d, gfn, &p2mt));    /* get the gfn */
     if ( p2m_is_shared(p2mt) )
-        goto out;
+        goto err;
 #else /* !CONFIG_X86 */
-    mfn = gmfn_to_mfn(d, gfn);
+    mfn = gmfn_to_mfn(d, gfn);                      /* get the gfn */
 #endif
 
     if ( unlikely(!mfn_valid(mfn)) )
-        goto out;
+        goto err;
 
     page = mfn_to_page(mfn);
     if ( unlikely(steal_page(d, page, MEMF_no_refcount)) )
-        page = NULL;
+        goto err;
 
- out:
-    put_gfn(d, gfn);
-    return page;
+    return page;                                    /* ref taken on success */
+ err:
+    put_gfn(d, gfn);                                /* put the gfn */
+    return NULL;                                    /* ref neutral on fail */
 }
 
+/*
+ * Replace, for a given gfn of a given domain, the old associated mfn by a
+ * new one, then update all the TLBs.
+ * The data are moved transparently from the old mfn to the new one so there
+ * is no functional effect on the domain.
+ * If the new mfn cannot be assigned to the domain, nothing happens and the
+ * function returns -1.
+ * In case of success, the function returns 0.
+ */
 static int __memory_move_replace(struct domain *d, unsigned long gfn,
                                  struct page_info *old, struct page_info *new)
 {
@@ -1117,11 +1135,26 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
         return -1;
     }
 
+    /*
+     * First step, remove the write access on the old mfn, and flush the TLBs
+     * for the appropriate entry.
+     */
+
     p2m->get_entry(p2m, gfn, &t, &a, 0, NULL);
     p2m->set_entry(p2m, gfn, _mfn(old_mfn), 0, t, p2m_access_rx);
     flush_tlb_one_all(gfn);
 
+    /*
+     * Here, the content of the page can be read but not modified, so we can
+     * safely perform the copy to the new mfn.
+     */
+
     copy_domain_page(new_mfn, old_mfn);
+
+    /*
+     * Now we can replace the old mfn by the new one, which has write access,
+     * and then flush the TLBs again for the appropriate entry.
+     */
 
     guest_physmap_add_page(d, gfn, new_mfn, 0);
     flush_tlb_one_all(gfn);
@@ -1134,8 +1167,8 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     return 0;
 }
 
-static unsigned long __memory_move(int domid, unsigned long *gfns,
-                                   unsigned long *nodes, unsigned long count)
+unsigned long memory_move(int domid, unsigned long *gfns,
+                          unsigned long *nodes, unsigned long count)
 {
     struct domain *d;
     unsigned long i, moved = 0;
@@ -1143,20 +1176,30 @@ static unsigned long __memory_move(int domid, unsigned long *gfns,
     struct page_info *old = NULL;
     struct page_info *new = NULL;
 
-    if ( (d = rcu_lock_domain_by_any_id(domid)) == NULL )
+    if ( (d = rcu_lock_domain_by_any_id(domid)) == NULL )  /* get the domain */
         return 0;
+
+    /*
+     * TODO: it may be necessary to lock the p2m of the domain during the
+     * entire execution of this function.
+     * The problem is the guest_physmap_add_page() invocation in
+     * __memory_move_replace() already takes a (non-reentrant) lock.
+     * The solution could be to add a parameter "assume already locked" to this
+     * function and provide a compatibility interface with this parameter to 0.
+     */
 
     memflags = MEMF_bits(domain_clamp_alloc_bitsize(
                              d, BITS_PER_LONG + PAGE_SHIFT));
 
-    set_memory_moved_gfns(d, gfns, count);
+    set_memory_moved_gfns(d, gfns, count);       /* gfns are fault protected */
 
     for (i=0; i<count; i++)
     {
         ASSERT(nodes[i] < MAX_NUMNODES);
 
-        old = __memory_move_steal(d, gfns[i]);
-        if ( unlikely(old == NULL) )
+        /* In success, deassign the old mfn from the domain */
+        old = __memory_move_steal(d, gfns[i]);                /* get the gfn */
+        if ( unlikely(old == NULL) )                     /* unless it failed */
             goto fail_gfn;
 
         flags = memflags | MEMF_node(nodes[i]) | MEMF_exact_node;
@@ -1167,6 +1210,7 @@ static unsigned long __memory_move(int domid, unsigned long *gfns,
         if ( __memory_move_replace(d, gfns[i], old, new) )
             goto fail_new;
 
+        put_gfn(d, gfns[i]);                                  /* put the gfn */
         gfns[i] = INVALID_GFN;
         moved++;
         continue;
@@ -1174,33 +1218,18 @@ static unsigned long __memory_move(int domid, unsigned long *gfns,
      fail_new:
         free_domheap_pages(new, 0);
      fail_old:
+        put_gfn(d, gfns[i]);                                  /* put the gfn */
+        /* Now reassign the old mfn to the domain */
         if ( assign_pages(d, old, 0, MEMF_no_refcount) )
             BUG();
      fail_gfn:
         continue;
     }
 
-    clear_memory_moved_gfns();
+    clear_memory_moved_gfns();       /* gfns are not fault protected anymore */
 
-    rcu_unlock_domain(d);
+    rcu_unlock_domain(d);                                  /* put the domain */
     return moved;
-}
-
-long memory_move(void)
-{
-    unsigned long old[] = {0x100, 0x10, 0x102};
-    unsigned long gfns[] = {0x100, 0x10, 0x102};
-    unsigned long nodes[] = {0, 0, 1};
-    unsigned long i, ret;
-
-    ret = __memory_move(1, gfns, nodes, 3);
-
-    printk("moved %lu pages\n", ret);
-    for (i=0; i<3; i++)
-        printk("moved %lx => %s\n", old[i],
-               (gfns[i] == INVALID_GFN) ? "yes" : "no");
-
-    return ret;
 }
 #endif /* BIGOS_MEMORY_MOVE */
 

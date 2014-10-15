@@ -4189,9 +4189,11 @@ int steal_page(
 
  fail:
     spin_unlock(&d->page_alloc_lock);
+#ifndef BIGOS_MEMORY_MOVE
     MEM_LOG("Bad page %p: ed=%p(%u), sd=%p, caf=%08lx, taf=%" PRtype_info,
             (void *)page_to_mfn(page), d, d->domain_id,
             page_get_owner(page), page->count_info, page->u.inuse.type_info);
+#endif
     return -1;
 }
 

@@ -250,8 +250,17 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         page_to_move = 512000;
 
-        if ( (d = rcu_lock_domain_by_any_id(1)) == NULL )
+        d = get_domain_by_id(0);
+        put_domain(d);
+        for (; d; d = d->next_in_list)
+            if ( d->guest_type == guest_type_hvm )
+                break;
+        if ( !d )
             return 0;
+
+        if ( (d = rcu_lock_domain_by_any_id(d->domain_id)) == NULL )
+            return 0;
+        printk("domain %d\n", d->domain_id);
 
         p2m = p2m_get_hostp2m(d);
         printk("checking %lu pages\n", page_to_move);

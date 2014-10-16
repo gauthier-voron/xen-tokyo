@@ -235,9 +235,16 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case -1:
     {
         unsigned long i, page_to_move;
-        unsigned long last_failure = INVALID_GFN;
+        unsigned long last_gfn = INVALID_GFN;
+        unsigned long last_node = 0, node;
         unsigned long count = 0;
         struct domain *d;
+
+        struct p2m_domain *p2m;
+        p2m_type_t t;
+        p2m_access_t a;
+        unsigned long mfn;
+
 
         printk("Xen Activation Point\n");
 
@@ -246,31 +253,60 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         if ( (d = rcu_lock_domain_by_any_id(1)) == NULL )
             return 0;
 
-        printk("moving %lu pages\n", page_to_move);
-        for (i=0; i<page_to_move; i++) {
-            if ( unlikely(memory_move(d, i, 0)) )
+        p2m = p2m_get_hostp2m(d);
+        printk("checking %lu pages\n", page_to_move);
+        for (i=0; i<page_to_move; i++)
+        {
+            mfn = mfn_x(p2m->get_entry(p2m, i, &t, &a, 0, NULL));
+            node = phys_to_nid(mfn << PAGE_SHIFT);
+
+            if ( unlikely(last_gfn != INVALID_GFN && last_node != node) )
             {
-                if ( last_failure == INVALID_GFN )
-                    last_failure = i;
+                printk("node[%lu] from %lx to %lx\n", last_node,last_gfn,i-1);
+                last_gfn = i;
+                last_node = node;
+            }
+
+            if ( unlikely(last_gfn == INVALID_GFN) )
+            {
+                last_gfn = i;
+                last_node = node;
+            }
+        }
+
+        if ( last_gfn != i-1 )
+            printk("node[%lu] from %lx to %lx\n", last_node, last_gfn, i-1);
+
+        printk("moving %lu pages\n", page_to_move);
+        last_gfn = INVALID_GFN;
+        for (i=0; i<page_to_move; i++)
+        {
+            mfn = mfn_x(p2m->get_entry(p2m, i, &t, &a, 0, NULL));
+            node = phys_to_nid(mfn << PAGE_SHIFT);
+
+            if ( unlikely(memory_move(d, i, node)) )
+            {
+                if ( last_gfn == INVALID_GFN )
+                    last_gfn = i;
             }
             else
             {
-                if ( unlikely(last_failure == i-1) )
-                    printk("failure on %lx\n", last_failure);
-                else if ( unlikely(last_failure != INVALID_GFN) )
-                    printk("failure from %lx to %lx\n", last_failure, i-1);
+                if ( unlikely(last_gfn == i-1) )
+                    printk("failure on %lx\n", last_gfn);
+                else if ( unlikely(last_gfn != INVALID_GFN) )
+                    printk("failure from %lx to %lx\n", last_gfn, i-1);
 
-                last_failure = INVALID_GFN;
+                last_gfn = INVALID_GFN;
                 count++;
             }
         }
 
         rcu_unlock_domain(d);
 
-        if ( unlikely(last_failure == i-1) )
-            printk("failure on %lx\n", last_failure);
-        else if ( unlikely(last_failure != INVALID_GFN) )
-            printk("failure from %lx to %lx\n", last_failure, i-1);
+        if ( unlikely(last_gfn == i-1) )
+            printk("failure on %lx\n", last_gfn);
+        else if ( unlikely(last_gfn != INVALID_GFN) )
+            printk("failure from %lx to %lx\n", last_gfn, i-1);
 
         printk("moved %lu pages\n", count);
 

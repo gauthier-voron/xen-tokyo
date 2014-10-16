@@ -267,6 +267,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         for (i=0; i<page_to_move; i++)
         {
             mfn = mfn_x(p2m->get_entry(p2m, i, &t, &a, 0, NULL));
+            if ( mfn == INVALID_MFN )
+                continue;
             node = phys_to_nid(mfn << PAGE_SHIFT);
 
             if ( unlikely(last_gfn != INVALID_GFN && last_node != node) )
@@ -291,6 +293,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         for (i=0; i<page_to_move; i++)
         {
             mfn = mfn_x(p2m->get_entry(p2m, i, &t, &a, 0, NULL));
+            if ( mfn == INVALID_MFN )
+                continue;
             node = phys_to_nid(mfn << PAGE_SHIFT);
 
             if ( unlikely(memory_move(d, i, node)) )

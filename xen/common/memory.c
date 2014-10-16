@@ -979,64 +979,55 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
 #ifdef BIGOS_MEMORY_MOVE
 /*
- * Contains the gfns which *may be* write protected while their are copied to
+ * Contains the gfn which *may be* write protected while it is copied to
  * another location.
  * This information should be used by the VMEXIT PGFAULT-like handler to
  * perform a short-term wait until the gfn has been copied.
  */
 static DEFINE_SPINLOCK(memory_moved_spinlock);
 static DEFINE_SPINLOCK(memory_moved_waiter);
-static unsigned long  memory_moved_gfns_size = 0;
-static unsigned long *memory_moved_gfns = NULL;
+static unsigned long  memory_moved_gfn = INVALID_GFN;
 static struct domain *memory_moved_domain = NULL;
 
 
 int is_memory_moved_gfn(struct domain *d, unsigned long gfn, int wait)
 {
-    unsigned long i;
-
     spin_lock(&memory_moved_spinlock);
 
     if ( d != memory_moved_domain )
         goto out;
+    if ( gfn != memory_moved_gfn )
+        goto out;
 
-    for (i=0; i<memory_moved_gfns_size; i++)
-        if ( memory_moved_gfns[i] == gfn )
-        {
-            spin_unlock(&memory_moved_spinlock);
+    spin_unlock(&memory_moved_spinlock);
 
-            /*
-             * When set_memory_moved_gfns() is called, it lock
-             * memory_moved_waiter.
-             * So the spin_lock() here blocks until clear_memory_moved_gfns()
-             * is called and unlock the waiter.
-             * Then immediately unlock the waiter to allow other blocked cpus
-             * to continue.
-             */
-            if ( wait ) {
-                spin_lock(&memory_moved_waiter);
-                spin_unlock(&memory_moved_waiter);
-            }
+    /*
+     * When set_memory_moved_gfn() is called, it lock memory_moved_waiter.
+     * So the spin_lock() here blocks until clear_memory_moved_gfn()
+     * is called and unlock the waiter.
+     * Then immediately unlock the waiter to allow other blocked cpus
+     * to continue.
+     */
 
-            return 1;
-        }
+    if ( wait ) {
+        spin_lock(&memory_moved_waiter);
+        spin_unlock(&memory_moved_waiter);
+    }
 
+    return 1;
 out:
     spin_unlock(&memory_moved_spinlock);
     return 0;
 }
 
-void set_memory_moved_gfns(struct domain *d, unsigned long *gfns,
-                           unsigned long size)
+void set_memory_moved_gfn(struct domain *d, unsigned long gfn)
 {
-    ASSERT(memory_moved_gfns == NULL);
-    ASSERT(memory_moved_gfns_size == 0);
+    ASSERT(memory_moved_gfn == INVALID_GFN);
     ASSERT(memory_moved_domain == NULL);
 
     spin_lock(&memory_moved_spinlock);
 
-    memory_moved_gfns = gfns;
-    memory_moved_gfns_size = size;
+    memory_moved_gfn = gfn;
     memory_moved_domain = d;
 
     spin_lock(&memory_moved_waiter);
@@ -1044,16 +1035,14 @@ void set_memory_moved_gfns(struct domain *d, unsigned long *gfns,
     spin_unlock(&memory_moved_spinlock);
 }
 
-void clear_memory_moved_gfns(void)
+void clear_memory_moved_gfn(void)
 {
-    ASSERT(memory_moved_gfns != NULL);
-    ASSERT(memory_moved_gfns_size > 0);
+    ASSERT(memory_moved_gfn != INVALID_GFN);
     ASSERT(memory_moved_domain != NULL);
 
     spin_lock(&memory_moved_spinlock);
 
-    memory_moved_gfns = NULL;
-    memory_moved_gfns_size = 0;
+    memory_moved_gfn = INVALID_GFN;
     memory_moved_domain = NULL;
 
     spin_unlock(&memory_moved_waiter);
@@ -1135,6 +1124,8 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
         return -1;
     }
 
+    set_memory_moved_gfn(d, gfn);                  /* gfn is fault protected */
+
     /*
      * First step, remove the write access on the old mfn, and flush the TLBs
      * for the appropriate entry.
@@ -1159,7 +1150,9 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     guest_physmap_add_page(d, gfn, new_mfn, 0);
     flush_tlb_one_all(gfn);
 
-    put_page(old);
+    clear_memory_moved_gfn();          /* gfn is not fault protected anymore */
+
+    put_page(old);             /* release the last reference on the old page */
 
     if ( !paging_mode_translate(d) )
         set_gpfn_from_mfn(new_mfn, gfn);
@@ -1167,17 +1160,17 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     return 0;
 }
 
-unsigned long memory_move(int domid, unsigned long *gfns,
-                          unsigned long *nodes, unsigned long count)
+int memory_move(struct domain *d, unsigned long gfn, unsigned long node)
 {
-    struct domain *d;
-    unsigned long i, moved = 0;
-    unsigned int  memflags, flags;
+    unsigned int memflags;
     struct page_info *old = NULL;
     struct page_info *new = NULL;
 
-    if ( (d = rcu_lock_domain_by_any_id(domid)) == NULL )  /* get the domain */
-        return 0;
+    ASSERT(node < MAX_NUMNODES);
+
+    memflags = domain_clamp_alloc_bitsize(d, BITS_PER_LONG + PAGE_SHIFT);
+    memflags = MEMF_bits(memflags);
+    memflags = memflags | MEMF_node(node) | MEMF_exact_node;
 
     /*
      * TODO: it may be necessary to lock the p2m of the domain during the
@@ -1188,48 +1181,30 @@ unsigned long memory_move(int domid, unsigned long *gfns,
      * function and provide a compatibility interface with this parameter to 0.
      */
 
-    memflags = MEMF_bits(domain_clamp_alloc_bitsize(
-                             d, BITS_PER_LONG + PAGE_SHIFT));
+    /* In success, deassign the old mfn from the domain */
+    old = __memory_move_steal(d, gfn);                        /* get the gfn */
+    if ( unlikely(old == NULL) )                         /* unless it failed */
+        goto fail_gfn;
 
-    set_memory_moved_gfns(d, gfns, count);       /* gfns are fault protected */
+    new = alloc_domheap_pages(NULL, 0, memflags);
+    if ( unlikely(new == NULL) )
+        goto fail_old;
 
-    for (i=0; i<count; i++)
-    {
-        ASSERT(nodes[i] < MAX_NUMNODES);
+    if ( __memory_move_replace(d, gfn, old, new) )
+        goto fail_new;
 
-        /* In success, deassign the old mfn from the domain */
-        old = __memory_move_steal(d, gfns[i]);                /* get the gfn */
-        if ( unlikely(old == NULL) )                     /* unless it failed */
-            goto fail_gfn;
+    put_gfn(d, gfn);                                          /* put the gfn */
 
-        flags = memflags | MEMF_node(nodes[i]) | MEMF_exact_node;
-        new = alloc_domheap_pages(NULL, 0, flags);
-        if ( unlikely(new == NULL) )
-            goto fail_old;
-
-        if ( __memory_move_replace(d, gfns[i], old, new) )
-            goto fail_new;
-
-        put_gfn(d, gfns[i]);                                  /* put the gfn */
-        gfns[i] = INVALID_GFN;
-        moved++;
-        continue;
-
-     fail_new:
-        free_domheap_pages(new, 0);
-     fail_old:
-        put_gfn(d, gfns[i]);                                  /* put the gfn */
-        /* Now reassign the old mfn to the domain */
-        if ( assign_pages(d, old, 0, MEMF_no_refcount) )
-            BUG();
-     fail_gfn:
-        continue;
-    }
-
-    clear_memory_moved_gfns();       /* gfns are not fault protected anymore */
-
-    rcu_unlock_domain(d);                                  /* put the domain */
-    return moved;
+    return 0;
+ fail_new:
+    free_domheap_pages(new, 0);
+ fail_old:
+    put_gfn(d, gfn);                                          /* put the gfn */
+    /* Now reassign the old mfn to the domain */
+    if ( assign_pages(d, old, 0, MEMF_no_refcount) )
+        BUG();
+ fail_gfn:
+    return -1;
 }
 #endif /* BIGOS_MEMORY_MOVE */
 

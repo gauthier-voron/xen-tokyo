@@ -234,48 +234,43 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
      */
     case -1:
     {
-        unsigned long i, mega, mega_to_move;
-        unsigned long last_failure = ~(0UL);
-        unsigned long gfns[256];
-        unsigned long nodes[256];
+        unsigned long i, page_to_move;
+        unsigned long last_failure = INVALID_GFN;
         unsigned long count = 0;
+        struct domain *d;
 
         printk("Xen Activation Point\n");
 
-        mega_to_move = 2000;
+        page_to_move = 512000;
 
-        printk("moving %lu megabytes\n", mega_to_move);
-        for (mega=0; mega<mega_to_move; mega++) {
-            for (i=0; i<256; i++) {
-                gfns[i] = mega * 256 + i;
-                nodes[i] = 0;
+        if ( (d = rcu_lock_domain_by_any_id(1)) == NULL )
+            return 0;
+
+        printk("moving %lu pages\n", page_to_move);
+        for (i=0; i<page_to_move; i++) {
+            if ( unlikely(memory_move(d, i, 0)) )
+            {
+                if ( last_failure == INVALID_GFN )
+                    last_failure = i;
             }
+            else
+            {
+                if ( unlikely(last_failure == i-1) )
+                    printk("failure on %lx\n", last_failure);
+                else if ( unlikely(last_failure != INVALID_GFN) )
+                    printk("failure from %lx to %lx\n", last_failure, i-1);
 
-            memory_move(1, gfns, nodes, 256);
-            for (i=0; i<256; i++)
-                if (gfns[i] != INVALID_GFN)
-                {
-                    if ( last_failure == ~(0UL) )
-                        last_failure = gfns[i];
-                }
-                else
-                {
-                    if ( last_failure != ~(0UL) )
-                    {
-                        printk("failure from %lx to %lx\n", last_failure,
-                               (i == 0) ? mega * 256 - 1 : gfns[i-1]);
-                        last_failure = ~(0UL);
-                    }
-                    count++;
-                }
+                last_failure = INVALID_GFN;
+                count++;
+            }
         }
 
-        if ( last_failure != ~(0UL) )
-        {
-            printk("failure from %lx to %lx\n", last_failure,
-                   (i == 0) ? mega * 256 - 1 : gfns[i-1]);
-            last_failure = ~(0UL);
-        }
+        rcu_unlock_domain(d);
+
+        if ( unlikely(last_failure == i-1) )
+            printk("failure on %lx\n", last_failure);
+        else if ( unlikely(last_failure != INVALID_GFN) )
+            printk("failure from %lx to %lx\n", last_failure, i-1);
 
         printk("moved %lu pages\n", count);
 

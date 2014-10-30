@@ -2354,7 +2354,7 @@ static void ept_handle_violation(unsigned long qualification, paddr_t gpa)
     int ret;
     struct domain *d = current->domain;
 
-    if (is_memory_moved_gfn(d, gfn, 1))
+    if ( is_memory_moved_gfn(d, gfn, 1) )
         return;
 
     if ( tb_init_done )

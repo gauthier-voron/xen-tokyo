@@ -221,15 +221,18 @@ void __init do_initcalls(void)
  * Simple hypercalls.
  */
 
-#define HYPERCALL_BIGOS_PTSTAT        -4
-#define HYPERCALL_BIGOS_PTSELFMOVE    -5
-#define HYPERCALL_BIGOS_FLUSHTLB      -6
+#ifdef BIGOS_MEMORY_MOVE
+#  define HYPERCALL_BIGOS_PTSTAT        -4
+#  define HYPERCALL_BIGOS_PTSELFMOVE    -5
+#  define HYPERCALL_BIGOS_FLUSHTLB      -6
+#endif
 
 DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     switch ( cmd )
     {
 
+#ifdef BIGOS_MEMORY_MOVE
     /*
      * Special case for manual triggering
      * Should not be in any definitive version
@@ -361,6 +364,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         flush_tlb_all();
         return 0;
     }
+#endif /* BIGOS_MEMORY_MOVE */
 
     case XENVER_version:
     {

@@ -1403,6 +1403,11 @@ static void svm_do_nested_pgfault(struct vcpu *v,
     p2m_access_t p2ma;
     struct p2m_domain *p2m = NULL;
 
+#ifdef BIGOS_MEMORY_MOVE
+    if ( is_memory_moved_gfn(v->domain, gfn, 1) )
+        return;
+#endif
+
     ret = hvm_hap_nested_page_fault(gpa, 0, ~0ul, 
                                     1, /* All NPFs count as reads */
                                     npfec & PFEC_write_access, 

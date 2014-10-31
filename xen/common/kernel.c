@@ -221,10 +221,151 @@ void __init do_initcalls(void)
  * Simple hypercalls.
  */
 
+#ifdef BIGOS_MEMORY_MOVE
+#  define HYPERCALL_BIGOS_PTSTAT        -4
+#  define HYPERCALL_BIGOS_PTSELFMOVE    -5
+#  define HYPERCALL_BIGOS_FLUSHTLB      -6
+#endif
+
 DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     switch ( cmd )
     {
+
+#ifdef BIGOS_MEMORY_MOVE
+    /*
+     * Special case for manual triggering
+     * Should not be in any definitive version
+     * The dom0 counterpart is in tools/trigger/
+     * TODO: remove as soon as possible
+     */
+    case HYPERCALL_BIGOS_PTSTAT:
+    {
+        unsigned long i, tot, node, sum4k, sum2m, sum1g;
+        unsigned long last_gfn, last_node, last_order;
+        unsigned long domid;
+        unsigned int order;
+        struct domain *d;
+        struct p2m_domain *p2m;
+        p2m_type_t t;
+        p2m_access_t a;
+        unsigned long mfn;
+
+        if ( copy_from_guest(&domid, arg, 1) )
+            return -EFAULT;
+
+        d = get_domain_by_id(domid);
+        if ( d == NULL )
+        {
+            printk("Domain %lu unavailable\n", domid);
+            return -1;
+        }
+        if ( d->guest_type != guest_type_hvm )
+        {
+            printk("Domain %lu is not HVM\n", domid);
+            put_domain(d);
+            return -1;
+        }
+
+        tot = d->tot_pages;
+        p2m = p2m_get_hostp2m(d);
+
+        last_gfn = 0;
+        last_node = ~0ul;
+        last_order = ~0ul;
+
+        sum4k = sum2m = sum1g = 0;
+
+        printk("%-10s %-10s %-5s %-5s\n", "from", "to", "node", "order");
+        for (i=0; i<tot; i++)
+        {
+            mfn = mfn_x(p2m->get_entry(p2m, i, &t, &a, 0, &order));
+            if ( mfn == INVALID_MFN )
+                continue;
+            node = phys_to_nid(mfn << PAGE_SHIFT);
+
+            if ( order == PAGE_ORDER_4K )
+                sum4k++;
+            else if ( order == PAGE_ORDER_2M )
+                sum2m++;
+            else if ( order == PAGE_ORDER_1G )
+                sum1g++;
+
+            if ( unlikely(node != last_node || order != last_order) )
+            {
+                if ( likely(last_node != ~0ul || last_order != ~0ul) )
+                    printk("0x%-8lx 0x%-8lx %-5lu %-5lu\n",
+                           last_gfn, i-1, last_node, last_order);
+                last_gfn = i;
+                last_node = node;
+                last_order = order;
+            }
+        }
+
+        put_domain(d);
+
+        printk("sum 4k = %lu\n", sum4k);
+        printk("sum 2m = %lu\n", sum2m);
+        printk("sum 1g = %lu\n", sum1g);
+
+        return 0;
+    }
+
+    case HYPERCALL_BIGOS_PTSELFMOVE:
+    {
+        unsigned long arr[2];
+        unsigned long domid, gfn, node;
+        struct domain *d;
+        struct p2m_domain *p2m;
+        p2m_type_t t;
+        p2m_access_t a;
+        unsigned long mfn;
+
+        if ( copy_from_guest(&arr, arg, 2) )
+            return -EFAULT;
+        domid = arr[0];
+        gfn = arr[1];
+
+        d = get_domain_by_id(domid);
+        if ( d == NULL )
+        {
+            printk("Domain %lu unavailable\n", domid);
+            return -1;
+        }
+        if ( d->guest_type != guest_type_hvm )
+        {
+            printk("Domain %lu is not HVM\n", domid);
+            put_domain(d);
+            return -1;
+        }
+
+        p2m = p2m_get_hostp2m(d);
+
+        mfn = mfn_x(p2m->get_entry(p2m, gfn, &t, &a, 0, NULL));
+        if ( mfn == INVALID_MFN )
+        {
+            put_domain(d);
+            return -1;
+        }
+
+        node = phys_to_nid(mfn << PAGE_SHIFT);
+        if ( memory_move(d, gfn, node) )
+        {
+            put_domain(d);
+            return -1;
+        }
+
+        put_domain(d);
+        return 0;
+    }
+
+    case HYPERCALL_BIGOS_FLUSHTLB:
+    {
+        flush_tlb_all();
+        return 0;
+    }
+#endif /* BIGOS_MEMORY_MOVE */
+
     case XENVER_version:
     {
         return (xen_major_version() << 16) | xen_minor_version();

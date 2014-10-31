@@ -371,4 +371,42 @@ int guest_remove_page(struct domain *d, unsigned long gmfn);
 /* TRUE if the whole page at @mfn is of the requested RAM type(s) above. */
 int page_is_ram_type(unsigned long mfn, unsigned long mem_type);
 
+
+#include <xen/config.h>
+
+#ifdef BIGOS_MEMORY_MOVE
+/*
+ * Look if a given gfn is currently moved and if so return 1, otherwise, return
+ * 0. If the wait argument is true, and the gfn is currently moving, then wait
+ * it is totally moved before to return 1.
+ */
+int is_memory_moved_gfn(struct domain *d, unsigned long gfn, int wait);
+
+/*
+ * Set the currently moving gfn.
+ * The function clear_memory_moved_gfn() should be called between two calls to
+ * this function.
+ */
+void set_memory_moved_gfns(struct domain *d, unsigned long *gfns,
+                           unsigned long size);
+
+/*
+ * Clean the currently moving gfn.
+ * The function set_memory_moved_gfn() should be called between two calls to
+ * this function.
+ */
+void clear_memory_moved_gfn(void);
+
+/*
+ * Move, for a specified domain, the pages with the given gfn to the specified
+ * nodes. The move can be done concurrently with other operations.
+ * <future>If a node has to be moved on a node it already is, nothing is done
+ * for this page.</future>
+ * Return the count of actually moved pages (since some pages cannot be moved).
+ * Now: the actually moved gfn are set in the gfns array to INVALID_MFN
+ * Finally: const *gnfs // nodes is filled with the new node of each gfn
+ */
+int memory_move(struct domain *d, unsigned long gfn, unsigned long node);
+#endif
+
 #endif /* __XEN_MM_H__ */

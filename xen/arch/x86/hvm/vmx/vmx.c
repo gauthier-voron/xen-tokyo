@@ -2354,6 +2354,11 @@ static void ept_handle_violation(unsigned long qualification, paddr_t gpa)
     int ret;
     struct domain *d = current->domain;
 
+#ifdef BIGOS_MEMORY_MOVE
+    if ( is_memory_moved_gfn(d, gfn, 1) )
+        return;
+#endif
+
     if ( tb_init_done )
     {
         struct {

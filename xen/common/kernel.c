@@ -14,6 +14,7 @@
 #include <xen/nmi.h>
 #include <xen/guest_access.h>
 #include <xen/hypercall.h>
+#include <asm/monitor.h>
 #include <asm/current.h>
 #include <public/nmi.h>
 #include <public/version.h>
@@ -227,6 +228,13 @@ void __init do_initcalls(void)
 #  define HYPERCALL_BIGOS_FLUSHTLB      -6
 #endif
 
+#ifdef BIGOS_PERF_COUNTING
+#  define HYPERCALL_BIGOS_PERF_ENABLE   -7
+#  define HYPERCALL_BIGOS_PERF_DISABLE  -8
+#endif
+
+extern void demonitor(void);
+
 DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     switch ( cmd )
@@ -366,6 +374,22 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     }
 #endif /* BIGOS_MEMORY_MOVE */
 
+#ifdef BIGOS_PERF_COUNTING
+    case HYPERCALL_BIGOS_PERF_ENABLE:
+    {
+        printk("Enabling perf counting\n");
+        monitor_intel();
+        return 0;
+    }
+
+    case HYPERCALL_BIGOS_PERF_DISABLE:
+    {
+        printk("Disable perf counting\n");
+        demonitor();
+        return 0;
+    }
+#endif /* BIGOS_PERF_COUNTING */
+    
     case XENVER_version:
     {
         return (xen_major_version() << 16) | xen_minor_version();

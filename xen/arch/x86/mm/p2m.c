@@ -237,18 +237,25 @@ void p2m_memory_type_changed(struct domain *d)
     }
 }
 
+extern int BIGOS_DEBUG_1;
 mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn,
                     p2m_type_t *t, p2m_access_t *a, p2m_query_t q,
                     unsigned int *page_order, bool_t locked)
 {
     mfn_t mfn;
 
+    if ( BIGOS_DEBUG_1 )
+        printk("start\n");
+    
     /* Unshare makes no sense withuot populate. */
     if ( q & P2M_UNSHARE )
         q |= P2M_ALLOC;
 
     if ( !p2m || !paging_mode_translate(p2m->domain) )
     {
+        if ( BIGOS_DEBUG_1 )
+            printk("no translated p2m = %p || mode = %x\n", p2m,
+                   paging_mode_translate(p2m->domain));
         /* Not necessarily true, but for non-translated guests, we claim
          * it's the most generic kind of memory */
         *t = p2m_ram_rw;
@@ -259,11 +266,16 @@ mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn,
         /* Grab the lock here, don't release until put_gfn */
         gfn_lock(p2m, gfn, 0);
 
+    if ( BIGOS_DEBUG_1 )
+        printk("get entry\n");
+    
     mfn = p2m->get_entry(p2m, gfn, t, a, q, page_order);
 
     if ( (q & P2M_UNSHARE) && p2m_is_shared(*t) )
     {
         ASSERT(!p2m_is_nestedp2m(p2m));
+        if ( BIGOS_DEBUG_1 )
+            printk("unshare\n");
         /* Try to unshare. If we fail, communicate ENOMEM without
          * sleeping. */
         if ( mem_sharing_unshare_page(p2m->domain, gfn, 0) < 0 )
@@ -273,6 +285,8 @@ mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn,
 
     if (unlikely((p2m_is_broken(*t))))
     {
+        if ( BIGOS_DEBUG_1 )
+            printk("broken\n");
         /* Return invalid_mfn to avoid caller's access */
         mfn = _mfn(INVALID_MFN);
         if ( q & P2M_ALLOC )

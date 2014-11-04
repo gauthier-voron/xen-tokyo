@@ -3298,11 +3298,54 @@ static int dummy_nmi_callback(const struct cpu_user_regs *regs, int cpu)
  
 static nmi_callback_t nmi_callback = dummy_nmi_callback;
 
+extern int BIGOS_DEBUG_0;
+extern void debug_store_infos(void);
+extern void debug_store_pouet(void);
+extern void pebs_record_infos(void);
 void do_nmi(const struct cpu_user_regs *regs)
 {
     unsigned int cpu = smp_processor_id();
     unsigned char reason;
 
+    if ( BIGOS_DEBUG_0 )
+    {
+        u64 enb, val;
+
+        rdmsr_safe(MSR_IA32_PEBS_ENABLE, enb);
+        enb &= ~(1UL);
+        wrmsr_safe(MSR_IA32_PEBS_ENABLE, enb);
+
+        printk("\n\n+++ NMI +++\n");
+        
+        printk("callback       = %p\n", nmi_callback);
+        printk("dummy_callback = %p\n", dummy_nmi_callback);
+        printk("\n");
+        
+        debug_store_infos();
+        debug_store_pouet();
+        debug_store_infos();
+        printk("\n");
+
+        pebs_record_infos();
+        printk("\n");
+        
+        printk("apic read = %x\n", apic_read(APIC_LVTPC));
+        apic_write(APIC_LVTPC, SET_APIC_DELIVERY_MODE(0, APIC_MODE_NMI));
+        printk("\n");
+        
+        rdmsr_safe(MSR_CORE_PERF_GLOBAL_STATUS, val);
+        printk("PERF_GLOBAL_STATUS = 0x%lx\n", val);
+        wrmsr_safe(MSR_CORE_PERF_GLOBAL_OVF_CTRL, 1UL << 62);
+        rdmsr_safe(MSR_CORE_PERF_GLOBAL_STATUS, val);
+        printk("PERF_GLOBAL_STATUS = 0x%lx\n", val);
+
+        printk("--- NMI ---\n\n\n");
+
+        enb |= 1UL;
+        wrmsr_safe(MSR_IA32_PEBS_ENABLE, enb);
+        return;
+    }
+    
     ++nmi_count(cpu);
 
     if ( nmi_callback(regs, cpu) )

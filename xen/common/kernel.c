@@ -378,14 +378,14 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case HYPERCALL_BIGOS_PERF_ENABLE:
     {
         printk("Enabling perf counting\n");
-        monitor_intel();
+        test_setup();
         return 0;
     }
 
     case HYPERCALL_BIGOS_PERF_DISABLE:
     {
         printk("Disable perf counting\n");
-        demonitor();
+        test_teardown();
         return 0;
     }
 #endif /* BIGOS_PERF_COUNTING */

@@ -6,6 +6,7 @@
 #include <xen/lib.h>
 #include <xen/mm.h>
 #include <xen/percpu.h>
+#include <xen/time.h>
 #include <xen/types.h>
 
 #define PEBS_SIZE_CORE   144        /* PEBS size for Intel Core & Intel Atom */
@@ -26,7 +27,7 @@ struct debug_store
     u64 pebs_index;
     u64 pebs_absolute_maximum;
     u64 pebs_interrupt_threshold;
-    u64 pebs_counter_reset;             /* always use PMC0 for PEBS sampling */
+    u64 pebs_counter_reset[0];
 } __attribute__((packed));
 
 
@@ -101,7 +102,7 @@ static int init_pebs(void)
     ret = wrmsr_safe(MSR_P6_PERFCTR0, -0x80000);
     if (ret)
         return ret;
-    debug_store->pebs_counter_reset = -0x80000;
+    debug_store->pebs_counter_reset[0] = -0x80000;
 
     /* ret = wrmsr_safe(MSR_P6_EVNTSEL0, 0x4300c0); */
     ret = wrmsr_safe(MSR_P6_EVNTSEL0, 0x4381d0);
@@ -237,55 +238,6 @@ void demonitor(void)
 
 
 
-
-DEFINE_PER_CPU(struct debug_store *, debug_store);
-
-
-
-/* static void __wrmsr_cpu(void *args) */
-/* { */
-/*     u64 *ret = (u64 *) args; */
-/*     u64 *expect = ret + 1; */
-/*     u64 *new = expect + 1; */
-/*     int err; */
-
-/*     err = rdmsr_safe(MSR_AI32_DS_AREA, (u64 */
-/* } */
-
-static void __rpmsr_cpu(void *arg)
-{
-    u64 *ret = (u64 *) arg;
-    u64 *msr = ret + 1;
-    u64 *exp = msr + 1;
-    u64 *new = exp + 1;
-    int err;
-
-    *ret = *new + 1;
-
-    err = rdmsr_safe(*msr, *ret);
-    if ( err && *ret != *exp )
-        return;
-
-    err = wrmsr_safe(*msr, *new);
-    if ( err )
-        return;
-
-    *ret = *new;
-}
-
-u64 rpmsr_cpu(u64 msr, u64 exp, u64 new, int cpu)
-{
-    cpumask_t cpumask;
-    u64 args[] = { 0, msr, exp, new };
-
-    cpumask_clear(&cpumask);
-    cpumask_set_cpu(cpu, &cpumask);
-
-    on_selected_cpus(&cpumask, __rpmsr_cpu, args, 1);
-    return args[0];
-}
-
-
 static void __rdmsr_cpu(void *args)
 {
     u64 *ret = (u64 *) args;
@@ -303,8 +255,13 @@ int rdmsr_cpu(u64 msr, u64 *val, int cpu)
     cpumask_clear(&cpumask);
     cpumask_set_cpu(cpu, &cpumask);
 
-    on_selected_cpus(&cpumask, __rdmsr_cpu, args, 1);
-    *val = args[2];
+    if ( cpu == smp_processor_id() )
+        __rdmsr_cpu(args);
+    else
+        on_selected_cpus(&cpumask, __rdmsr_cpu, args, 1);
+
+    if ( !args[0] )
+        *val = args[2];
     return (int) args[0];
 }
 
@@ -326,792 +283,569 @@ int wrmsr_cpu(u64 msr, u64 val, int cpu)
     cpumask_clear(&cpumask);
     cpumask_set_cpu(cpu, &cpumask);
 
-    on_selected_cpus(&cpumask, __wrmsr_cpu, args, 1);
+    if ( cpu == smp_processor_id() )
+        __wrmsr_cpu(args);
+    else
+        on_selected_cpus(&cpumask, __wrmsr_cpu, args, 1);
+
     return (int) args[0];
 }
 
 
 
-/*
- * Stub for installing and uninstalling debug store.
- * The argument is the address of the debug store pointer.
- * In case of success, the debug store pointer is left unchanged, otherwise,
- * it is modified.
- */
-/* static void __set_ds_area(void *val) */
-/* { */
-/*     struct debug_store **debug_store = (struct debug_store **) val; */
-/*     int ret; */
-
-/*     ret = wrmsr_safe(MSR_IA32_DS_AREA, (u64) *debug_store); */
-/*     if ( ret ) */
-/*         *debug_store = *debug_store + 1; */
-/* } */
-
-/*
- * Install the given debug store for the specified CPU.
- * Return 0 in case of success, -1 otherwise.
- */
-/* static int install_debug_store(int cpu) */
-/* { */
-/* /\*     cpumask_t cpumask; *\/ */
-/* /\*     struct debug_store *err = per_cpu(debug_store, cpu); *\/ */
-
-/* /\*     if ( per_cpu(debug_store, cpu) == NULL ) *\/ */
-/* /\*         return -1; *\/ */
-    
-/* /\*     cpumask_clear(&cpumask); *\/ */
-/* /\*     cpumask_set_cpu(cpu, &cpumask); *\/ */
-
-/* /\*     on_selected_cpus(&cpumask, __set_ds_area, &err, 1); *\/ */
-/* /\*     if ( err != per_cpu(debug_store, cpu) ) *\/ */
-/* /\*         goto err; *\/ */
-        
-/* /\*     return 0; *\/ */
-/* /\* err: *\/ */
-/* /\*     return -1; *\/ */
-/*     u64 ret; */
-
-/*     ret = rpmsr_cpu(MSR_IA32_DS_AREA, 0, (u64) per_cpu(debug_store, cpu), cpu); */
-/*     if ( ret == (u64) per_cpu(debug_store, cpu) ) */
-/*         return 0; */
-/*     return -1; */
-/* } */
-
-
-
-/* /\* */
-/*  * Uninstall the given debug store for the specified CPU. */
-/*  * Return 0 in case of success, -1 otherwise. */
-/*  *\/ */
-/* static int uninstall_debug_store(int cpu) */
-/* { */
-/*     /\* cpumask_t cpumask; *\/ */
-/*     /\* struct debug_store *err = NULL; *\/ */
-    
-/*     /\* cpumask_clear(&cpumask); *\/ */
-/*     /\* cpumask_set_cpu(cpu, &cpumask); *\/ */
-
-/*     /\* on_selected_cpus(&cpumask, __set_ds_area, &err, 1); *\/ */
-/*     /\* return (err == NULL) ? 0 : -1; *\/ */
-/*     return wrmsr_cpu(MSR_IA32_DS_AREA, 0, cpu); */
-/* } */
-
-
-
-
-/*
- * Allocate a debug store on the specified CPU.
- * The function will fail if no more memory or if there already is a debug
- * store on the spcified CPU.
- * Return 0 in case of success.
- */
-static int alloc_debug_store(int cpu)
+static void __apic_read_cpu(void *args)
 {
-    struct debug_store *ds;
-    int err = -1;
-    u64 ret;
+    u64 *ret = (u64 *) args;
+    u64 *reg = ret + 1;
 
-    ds = alloc_xenheap_page();
-    if ( ds == NULL )
-        goto out;
-    memset(ds, 0, PAGE_SIZE);
-    
-    ret = rpmsr_cpu(MSR_IA32_DS_AREA, 0, (u64) ds, cpu);
-    if ( ret != (u64) ds )
-        goto free;
-    
-    err = 0;
- out:
-    return err;
- free:
-    free_xenheap_page(ds);
-    goto out;    
+    *ret = (u64) apic_read((unsigned long) *reg);
 }
 
-/*
- * Free the debug store of the specified CPU.
- * This function can fail in case of race condition.
- * Return 0 in case of success.
- */
-static int free_debug_store(int cpu)
+u32 apic_read_cpu(unsigned long reg, int cpu)
 {
-    struct debug_store *ds;
-    int err = 0;
-    u64 ret;
+    cpumask_t cpumask;
+    u64 args[] = { 0, reg };
 
-    err = rdmsr_cpu(MSR_IA32_DS_AREA, (u64 *) &ds, cpu);
-    if ( err || ds == NULL )
-        goto out;
+    cpumask_clear(&cpumask);
+    cpumask_set_cpu(cpu, &cpumask);
 
-    ret = rpmsr_cpu(MSR_IA32_DS_AREA, (u64) ds, 0, cpu);
-    if ( ret != 0 )
-        goto err;
+    if ( cpu == smp_processor_id() )
+        __apic_read_cpu(args);
+    else
+        on_selected_cpus(&cpumask, __apic_read_cpu, args, 1);
 
-    if ( ds->bts_buffer_base != 0 )
-        printk("%s:%d: possible BTS memory leak\n", __FILE__, __LINE__);
-    if ( ds->pebs_buffer_base != 0 )
-        printk("%s:%d: possible PEBS memory leak\n", __FILE__, __LINE__);
-
-    free_xenheap_page(ds);
-
- out:
-    return err;
- err:
-    err = -1;
-    goto out;
+    return (u32) args[0];
 }
 
+
+static void __apic_write_cpu(void *args)
+{
+    u64 *reg = (u64 *) args;
+    u64 *val = reg + 1;
+
+    apic_write((unsigned long) *reg, (u32) *val);
+}
+
+void apic_write_cpu(unsigned long reg, u32 val, int cpu)
+{
+    cpumask_t cpumask;
+    u64 args[] = { reg, val };
+
+    cpumask_clear(&cpumask);
+    cpumask_set_cpu(cpu, &cpumask);
+
+    if ( cpu == smp_processor_id() )
+        __apic_write_cpu(args);
+    else
+        on_selected_cpus(&cpumask, __apic_write_cpu, args, 1);
+}
+
+
+
+
+
 /*
- * Return the debug store for the current CPU, or NULL if no debug store has
- * been allocated.
+ * The reference counters for the debug store of each CPU.
+ */
+DEFINE_PER_CPU(unsigned long, debug_store_refcnt);
+
+/*
+ * The spinlock used to protect every get/put for debug store.
+ */
+DEFINE_SPINLOCK(debug_store_spinlock);
+
+/*
+ * Get a reference on the debug store of the specified CPU.
+ * Allocate and install a debug store if there is none.
+ * The function will fail if there is no more memory.
+ * Return a pointer to the debug store in case of success, or NULL otherwise.
  */
 static struct debug_store *get_debug_store(int cpu)
 {
-    struct debug_store *ds;
-    int err;
+    struct debug_store *ds = NULL;
 
-    err = rdmsr_cpu(MSR_IA32_DS_AREA, (u64 *) &ds, cpu);
-    if ( err )
-        return NULL;
-    return ds;
-}
+    spin_lock(&debug_store_spinlock);
 
+    if ( per_cpu(debug_store_refcnt, cpu) > 0 )
+    {
+        rdmsr_cpu(MSR_IA32_DS_AREA, (u64 *) &ds, cpu);
+        goto out;
+    }
 
-
-
-
-/* Only compatible with Haswell architecture for now */
-static unsigned long pebs_record_size = PEBS_SIZE_HSW;
-
-/*
- * Allocate a PEBS record array for the specified CPU.
- * This function will fail if there is no allocated debug store or if there
- * already is a record array or if there is no more memory available.
- * Return 0 in case of success.
- */
-static int alloc_pebs_records(int cpu)
-{
-    struct debug_store *ds = get_debug_store(cpu);
-    struct pebs_records *pebs;
-    int err = 0;
-    u64 base;
-
+    ds = alloc_xenheap_page();
     if ( ds == NULL )
         goto err;
 
-    if ( ds->pebs_buffer_base != 0 )
+    memset(ds, 0, PAGE_SIZE);
+    wrmsr_cpu(MSR_IA32_DS_AREA, (u64) ds, cpu);
+
+ out:
+    per_cpu(debug_store_refcnt, cpu)++;
+ err:
+    spin_unlock(&debug_store_spinlock);
+    return ds;
+}
+
+/*
+ * Release a reference on the debug store of the specified CPU.
+ * Free the debug store if there is no more reference.
+ */
+static void put_debug_store(int cpu)
+{
+    struct debug_store *ds;
+
+    spin_lock(&debug_store_spinlock);
+
+    if ( per_cpu(debug_store_refcnt, cpu) == 0 )
+        goto out;
+
+    per_cpu(debug_store_refcnt, cpu)--;
+    if ( per_cpu(debug_store_refcnt, cpu) > 0 )
+        goto out;
+
+    rdmsr_cpu(MSR_IA32_DS_AREA, (u64 *) &ds, cpu);
+    wrmsr_cpu(MSR_IA32_DS_AREA, 0, cpu);
+
+    free_xenheap_page(ds);
+
+ out:
+    spin_unlock(&debug_store_spinlock);
+}
+
+
+/* Only compatible with Haswell architecture for now */
+static unsigned long pebs_record_size;
+
+/*
+ * The reference counters for the PEBS record array of each CPU.
+ */
+DEFINE_PER_CPU(unsigned long, pebs_records_refcnt);
+
+/*
+ * The spinlock used to protect every get/put for pebs record arrays.
+ */
+DEFINE_SPINLOCK(pebs_records_spinlock);
+
+/*
+ * Get a reference on the PEBS record array of the current CPU.
+ * Allocate a PEBS record array if there is none, and a debug store for the
+ * specified CPU if necessary.
+ * This function takes a reference on the debug store of the specified CPU
+ * while the PEBS record array is allocated.
+ * This function will fail if there is no more memory available.
+ * Return the address of the PEBS record array in case of success, or NULL
+ * otherwise.
+ */
+static struct pebs_record *get_pebs_records(int cpu)
+{
+    struct pebs_record *pebs = NULL;
+    struct debug_store *ds;
+    u64 base;
+
+    spin_lock(&pebs_records_spinlock);
+
+    ds = get_debug_store(cpu);
+    if ( ds == NULL )
         goto err;
-    
+
+    if ( per_cpu(pebs_records_refcnt, cpu) > 0 )
+    {
+        pebs = (struct pebs_record *) ds->pebs_buffer_base;
+        goto out;
+    }
+
     pebs = alloc_xenheap_page();
     if ( pebs == NULL )
-        goto err;
+        goto put;
 
     base = (u64) pebs;
     ds->pebs_buffer_base = base;
     ds->pebs_index = base;
     ds->pebs_absolute_maximum = base + PAGE_SIZE;
-    ds->pebs_interrupt_threshold = base + pebs_record_size;
-    ds->pebs_counter_reset = 0;
-    
+    ds->pebs_interrupt_threshold = base + PAGE_SIZE;
+    ds->pebs_interrupt_threshold -= PAGE_SIZE % pebs_record_size;
+
+    get_debug_store(cpu);
+
  out:
-    return err;
+    per_cpu(pebs_records_refcnt, cpu)++;
+ put:
+    put_debug_store(cpu);
  err:
-    err = -1;
-    goto out;
+    spin_unlock(&pebs_records_spinlock);
+    return pebs;
 }
 
 /*
- * Free the PEBS record array for the specified CPU.
- * This function fails, if no debug store is allocated for the specified CPU.
- * Return 0 in case of success.
+ * Release a reference on the PEBS record array of the specified CPU.
+ * Free the PEBS record array if there is no more reference.
+ * In this last case, release a reference on the corresponding debug store.
  */
-static int free_pebs_records(int cpu)
+static void put_pebs_records(int cpu)
 {
-    struct debug_store *ds = get_debug_store(cpu);
+    struct debug_store *ds;
     struct pebs_record *pebs;
-    int err = 0;
 
+    spin_lock(&pebs_records_spinlock);
+
+    if ( per_cpu(pebs_records_refcnt, cpu) == 0 )
+        goto out;
+
+    per_cpu(pebs_records_refcnt, cpu)--;
+
+    if ( per_cpu(pebs_records_refcnt, cpu) > 0 )
+        goto out;
+
+    ds = get_debug_store(cpu);
     if ( ds == NULL )
-        goto err;
+        goto out;
 
     pebs = (struct pebs_record *) ds->pebs_buffer_base;
+    put_debug_store(cpu);
+
     if ( pebs == NULL )
-        goto out;
+        goto put;
 
     ds->pebs_absolute_maximum = 0;
     ds->pebs_buffer_base = 0;
     ds->pebs_index = 0;
     ds->pebs_interrupt_threshold = 0;
-    ds->pebs_counter_reset = 0;
 
     free_xenheap_page(pebs);
 
+ put:
+    put_debug_store(cpu);
  out:
-    return err;
- err:
-    err = -1;
-    goto out;
-}
-
-/*
- * Return the PEBS record array for the given CPU, or NULL if no debug store
- * or no PEBS record array is allocated for the given CPU.
- */
-static struct pebs_record *get_pebs_records(int cpu)
-{
-    struct debug_store *ds = get_debug_store(cpu);
-    struct pebs_record *pebs = NULL;
-
-    if ( ds == NULL )
-        goto out;
-
-    pebs = (struct pebs_record *) ds->pebs_buffer_base;
- out:
-    return pebs;
+    spin_unlock(&pebs_records_spinlock);
 }
 
 
+/*
+ * These are the counter and event selector registers used for PEBS.
+ * We do not use the PERFCTR0 because it is already used by Xen for its
+ * watchdog for Intel CPUs (see arch/x86/nmi.c)
+ */
+#define DS_CTRRST_PEBS        (0)
+#define MSR_PERFCTR_PEBS      MSR_IA32_PERFCTR0
+#define MSR_PERFEVTSEL_PEBS   MSR_IA32_PERFEVTSEL0
+#define MSR_PEBS_ENABLE_MASK  (0x1)
 
-
-
-
+static cpumask_t msr_pebs_usemap;         /* allocated PEBS counters per cpu */
 
 /*
- * Allocate a pebs record array for a given cpu.
- * This function will actually allocate space only if there is no record array
- * allocated for the given cpu.
- * Return 0 if there is a record array allocated for the specified cpu.
+ * Allocate the PEBS capable MSR for the specified CPU.
+ * Return 1 if the MSR has been successfully allocated, 0 therwise.
  */
-/* static int alloc_pebs_records(int cpu) */
-/* { */
-/*     if ( per_cpu(pebs_records, cpu) != NULL ) */
-/*         goto out; */
-
-/*     per_cpu(pebs_records, cpu) = alloc_xenheap_page(); */
-/*     if ( per_cpu(pebs_records, cpu) == NULL ) */
-/*         goto out; */
-
-/*  out: */
-/*     return (per_cpu(pebs_records, cpu) != NULL) ? 0 : -1; */
-/* } */
-
-/*
- * Free the allocated pebs record array for the specified cpu.
- * Return 0 if there is no more record array allocated for the specified cpu.
- */
-/* static int free_pebs_records(int cpu) */
-/* { */
-/*     if ( per_cpu(pebs_records, cpu) == NULL ) */
-/*         goto out; */
-
-/*     free_xenheap_page(per_cpu(pebs_records, cpu)); */
-/*     per_cpu(pebs_records, cpu) = NULL; */
-
-/*  out: */
-/*     return 0; */
-/* } */
-
-
-
-
-
-
-
-/* DEFINE_PER_CPU(unsigned long, debug_store_refcnt); */
-
-
-/* static struct debug_store *get_debug_store(void) */
-/* { */
-/*     struct debug_store *debug_store = NULL; */
-/*     u64 ds_area; */
-/*     int ret; */
-
-/*     ret = rdmsr_safe(MSR_IA32_DS_AREA, ds_area); */
-/*     if ( ret ) */
-/*         goto err; */
-
-/*     printk("ok\n"); */
-    
-/*     debug_store = (struct debug_store *) ds_area; */
-/*     if ( debug_store != NULL ) */
-/*         goto out; */
-
-/*     printk("ok\n"); */
-    
-/*     debug_store = alloc_xenheap_page(); */
-
-/*     printk("alloc_xenheap_page() = %p\n", debug_store); */
-/*     return NULL; */
-
-/*     if ( debug_store == NULL ) */
-/*         goto err; */
-
-/*     printk("ok\n"); */
-/*     return NULL; */
-
-/*     this_cpu(debug_store_refcnt) = 0; */
-/*     memset(debug_store, 0, PAGE_SIZE); */
-
-/*     ret = wrmsr_safe(MSR_IA32_DS_AREA, (u64) debug_store); */
-/*     if ( ret ) */
-/*     { */
-/*         free_xenheap_page(debug_store); */
-/*         debug_store = NULL; */
-/*         goto err; */
-/*     } */
-    
-/*  out: */
-/*     this_cpu(debug_store_refcnt)++; */
-/*  err: */
-/*     return debug_store; */
-/* } */
-
-/* static void put_debug_store(void) */
-/* { */
-/*     struct debug_store *debug_store; */
-/*     u64 ds_area; */
-/*     int ret; */
-
-/*     if ( this_cpu(debug_store_refcnt) == 0 ) */
-/*     { */
-/*         printk("%s:%d: fantom reference\n", __FILE__, __LINE__); */
-/*         return; */
-/*     } */
-
-/*     this_cpu(debug_store_refcnt)--; */
-
-/*     if ( this_cpu(debug_store_refcnt) > 0 ) */
-/*         return; */
-
-/*     ret = rdmsr_safe(MSR_IA32_DS_AREA, ds_area); */
-/*     if ( ret ) */
-/*     { */
-/*         printk("%s:%d: MSR_IA32_DS_AREA broken\n", __FILE__, __LINE__); */
-/*         return; */
-/*     } */
-
-/*     debug_store = (struct debug_store *) ds_area; */
-/*     printk("__debug_store = %p\n", debug_store); */
-/*     if ( debug_store == NULL ) */
-/*     { */
-/*         printk("%s:%d: MSR_IA32_DS_AREA overwritten\n", __FILE__, __LINE__); */
-/*         return; */
-/*     }; */
-
-/*     ret = wrmsr_safe(MSR_IA32_DS_AREA, 0); */
-/*     if ( ret ) */
-/*     { */
-/*         printk("%s:%d: MSR_IA32_DS_AREA broken\n", __FILE__, __LINE__); */
-/*         return; */
-/*     }; */
-    
-/*     if ( debug_store->bts_buffer_base ) */
-/*         printk("%s:%d: possible BTS memory leak\n", __FILE__, __LINE__); */
-/*     if ( debug_store->pebs_buffer_base ) */
-/*         printk("%s:%d: possible PEBS memory leak\n", __FILE__, __LINE__); */
-
-/*     free_xenheap_page(debug_store); */
-/* } */
-
-
-/* static unsigned long pebs_record_size = 0; */
-
-/* static int init_pebs_record_size(void) */
-/* { */
-/*     pebs_record_size = PEBS_SIZE_HSW; */
-/*     return 0; */
-/* } */
-
-/* DEFINE_PER_CPU(unsigned long, pebs_records_refcnt); */
-
-/* static struct pebs_records *get_pebs_records(void) */
-/* { */
-/*     struct pebs_records *pebs_records = NULL; */
-/*     struct debug_store *debug_store; */
-/*     u64 base; */
-
-/*     if ( !pebs_record_size && init_pebs_record_size() ) */
-/*         goto err; */
-
-/*     debug_store = get_debug_store();            /\* this ref will be released *\/ */
-/*     if ( debug_store == NULL ) */
-/*         goto err; */
-
-/*     pebs_records = (struct pebs_records *) debug_store->pebs_buffer_base; */
-/*     if ( pebs_records != NULL ) */
-/*         goto out; */
-
-/*     pebs_records = alloc_xenheap_page(); */
-/*     if ( pebs_records == NULL ) */
-/*         goto err_ds; */
-
-/*     this_cpu(pebs_records_refcnt) = 0; */
-
-/*     /\* */
-/*      * This reference is taken when allocating a new PEBS record buffer and */
-/*      * will be released when the PEBS record buffer is released too (in */
-/*      * put_pebs_records). */
-/*      *\/ */
-/*     get_debug_store(); */
-    
-/*     base = (u64) pebs_records; */
-/*     debug_store->pebs_buffer_base = base; */
-/*     debug_store->pebs_index = base; */
-/*     debug_store->pebs_absolute_maximum = base + PAGE_SIZE; */
-/*     debug_store->pebs_interrupt_threshold = base + pebs_record_size; */
-    
-/*  out: */
-/*     this_cpu(pebs_records_refcnt)++; */
-/*  err_ds: */
-/*     put_debug_store();                 /\* always release the first taken ref *\/ */
-/*  err: */
-/*     return pebs_records; */
-/* } */
-
-/* static __attribute__((unused)) void put_pebs_records(void) */
-/* { */
-/*     struct debug_store *debug_store; */
-/*     struct pebs_record *pebs_records; */
-
-/*     if ( this_cpu(pebs_records_refcnt) == 0 ) */
-/*     { */
-/*         printk("%s:%d: fantom reference\n", __FILE__, __LINE__); */
-/*         return; */
-/*     }; */
-    
-/*     this_cpu(pebs_records_refcnt)--; */
-
-/*     if ( this_cpu(pebs_records_refcnt) > 0 ) */
-/*         return; */
-
-/*     debug_store = get_debug_store(); */
-/*     if ( debug_store == NULL ) */
-/*     { */
-/*         printk("%s:%d: debug store overwritten\n", __FILE__, __LINE__); */
-/*         return; */
-/*     }; */
-
-/*     pebs_records = (struct pebs_record *) debug_store->pebs_buffer_base; */
-/*     if ( pebs_records == NULL ) */
-/*     { */
-/*         printk("%s:%d: PEBS buffer base overwritten\n", __FILE__, __LINE__); */
-/*         return; */
-/*     }; */
-
-/*     debug_store->pebs_absolute_maximum = 0; */
-/*     debug_store->pebs_buffer_base = 0; */
-/*     debug_store->pebs_index = 0; */
-/*     debug_store->pebs_interrupt_threshold = 0; */
-/*     debug_store->pebs_counter_reset = 0; */
-
-/*     free_xenheap_page(pebs_records); */
-/*     put_debug_store(); */
-/* } */
-
-
-/* /\* static void __get_all_pebs_records(void *cpu_ret) *\/ */
-/* /\* { *\/ */
-/* /\*     struct pebs_records *ret; *\/ */
-/* /\*     int *__cpu_ret = (int *) cpu_ret; *\/ */
-
-/* /\*     printk("getting pebs on cpu %d\n", get_processor_id()); *\/ */
-    
-/* /\*     ret = get_pebs_records(); *\/ */
-/* /\*     __cpu_ret[get_processor_id()] = (ret != NULL) ? 0 : -1; *\/ */
-/* /\* } *\/ */
-
-/* /\* static void __put_all_pebs_records(void *cpu_ret) *\/ */
-/* /\* { *\/ */
-/* /\*     int *__cpu_ret = (int *) cpu_ret; *\/ */
-    
-/* /\*     if ( !__cpu_ret || __cpu_ret[get_processor_id()] ) *\/ */
-/* /\*     { *\/ */
-/* /\*         printk("putting pebs on cpu %d\n", get_processor_id()); *\/ */
-/* /\*         /\\* put_pebs_records(); *\\/ *\/ */
-/* /\*     } *\/ */
-/* /\* } *\/ */
-
-/* /\* static int get_all_pebs_records(void) *\/ */
-/* /\* { *\/ */
-/* /\*     int cpu, ret = 0; *\/ */
-/* /\*     int cpu_ret[NR_CPUS] = { 0 }; *\/ */
-    
-/* /\*     on_each_cpu(__get_all_pebs_records, cpu_ret, 1); *\/ */
-/* /\*     for_each_cpu(cpu, &cpu_online_map) *\/ */
-/* /\*     { *\/ */
-/* /\*         ret = cpu_ret[cpu]; *\/ */
-/* /\*         if ( ret ) *\/ */
-/* /\*         { *\/ */
-/* /\*             on_each_cpu(__put_all_pebs_records, cpu_ret, 1); *\/ */
-/* /\*             goto out; *\/ */
-/* /\*         } *\/ */
-/* /\*     } *\/ */
-
-/* /\*  out: *\/ */
-/* /\*     return ret; *\/ */
-/* /\* } *\/ */
-
-/* /\* static void put_all_pebs_records(void) *\/ */
-/* /\* { *\/ */
-/* /\*     on_each_cpu(__put_all_pebs_records, NULL, 1); *\/ */
-/* /\* } *\/ */
-
-
-
-
-
-#define IA32_PERFCTR_START       0x0c1    /* First MSR address of PERFCTR */
-#define IA32_PERFEVTSEL_START    0x186    /* First MSR address of PERFEVTSEL */
-#define IA32_PERF_MAX            1        /* Maximum amount of supported PMC */
-
-struct perf_counter
+static int alloc_msr_pebs(int cpu)
 {
-    unsigned long perfctr;       /* IA32_PERFCTR MSR address */
-    unsigned long perfevtsel;    /* IA32_PERFEVTSEL MSR address */
-    cpumask_t     usedmap;       /* on which cpu the PMC is used */
-};
+    if ( cpumask_test_cpu(cpu, &msr_pebs_usemap) )
+        return 0;
+    cpumask_set_cpu(cpu, &msr_pebs_usemap);
+    return 1;
+}
 
-unsigned long  supported_pmcs_count = 0;      /* count of actually supported */
-struct perf_counter supported_pmcs[IA32_PERF_MAX];         /* supported PMCs */
+/*
+ * Free the PEBS capable MSR for the specified CPU.
+ */
+static void free_msr_pebs(int cpu)
+{
+    cpumask_clear_cpu(cpu, &msr_pebs_usemap);
+}
+
+
+#define MSR_PERFEVT_INV          (1UL << 23)
+#define MSR_PERFEVT_EN           (1UL << 22)
+#define MSR_PERFEVT_INT          (1UL << 20)
+#define MSR_PERFEVT_PC           (1UL << 19)
+#define MSR_PERFEVT_E            (1UL << 18)
+#define MSR_PERFEVT_OS           (1UL << 17)
+#define MSR_PERFEVT_USR          (1UL << 16)
+#define MSR_PERFEVT_UMASK        (0xff00)
+#define MSR_PERFEVT_EVENT        (0xff)
+
+#define PEBS_INST                (0x00c1)
+#define  PEBS_INST_PDIST         (0x0100)
+#define PEBS_UOPS                (0x00c2)
+#define  PEBS_UOPS_ALL           (0x0100)
+#define  PEBS_UOPS_SLOT          (0x0200)
+#define PEBS_BRINST              (0x00c4)
+#define  PEBS_BRINST_COND        (0x0100)
+#define  PEBS_BRINST_NEARCL      (0x0200)
+#define  PEBS_BRINST_ALL         (0x0400)
+#define  PEBS_BRINST_NEARR       (0x0800)
+#define  PEBS_BRINST_NEART       (0x2000)
+#define PEBS_BRMISP              (0x00c5)
+#define  PEBS_BRMISP_COND        (0x0100)
+#define  PEBS_BRMISP_NEARCL      (0x0200)
+#define  PEBS_BRMISP_ALL         (0x0400)
+#define  PEBS_BRMISP_NOTTK       (0x1000)
+#define  PEBS_BRMISP_TAKEN       (0x2000)
+#define PEBS_MUOPS               (0x00d0)
+#define  PEBS_MUOPS_TLBMSLD      (0x1100)
+#define  PEBS_MUOPS_TLBMSST      (0x1200)
+#define  PEBS_MUOPS_LCKLD        (0x2100)
+#define  PEBS_MUOPS_SPLLD        (0x4100)
+#define  PEBS_MUOPS_SPLST        (0x4200)
+#define  PEBS_MUOPS_ALLLD        (0x8100)
+#define  PEBS_MUOPS_ALLST        (0x8200)
+#define PEBS_MLUOPS              (0x00d1)
+#define  PEBS_MLUOPS_LIHIT       (0x0100)
+#define  PEBS_MLUOPS_L2HIT       (0x0200)
+#define  PEBS_MLUOPS_L3HIT       (0x0300)
+#define  PEBS_MLUOPS_HITLFB      (0x4000)
+
+
+
+DEFINE_PER_CPU(pebs_handler_t, pebs_handler);
+
+int nmi_pebs(int cpu)
+{
+    u64 pebs_enable, global_status, ds_area, addr;
+    struct debug_store *local_store;
+    pebs_handler_t handler;
+
+    /* Start by disabling PEBS while handling the interrupt */
+    rdmsr_safe(MSR_IA32_PEBS_ENABLE, pebs_enable);
+    wrmsr_safe(MSR_IA32_PEBS_ENABLE, pebs_enable & ~MSR_PEBS_ENABLE_MASK);
+
+    /* Now check the PERF_GLOBAL_STATUS to see if PEBS set an overflow */
+    rdmsr_safe(MSR_CORE_PERF_GLOBAL_STATUS, global_status);
+    if ( !(global_status & MSR_CORE_PERF_GLOBAL_OVFBUFFR) )
+        return 0;
+
+    /* This is a PEBS NMI, so obtain debug store and record array addresses */
+    rdmsr_safe(MSR_IA32_DS_AREA, ds_area);
+    local_store = (struct debug_store *) ds_area;
+
+    /* If there is a handler, then apply it to every records */
+    handler = per_cpu(pebs_handler, cpu);
+    if ( handler != NULL )
+        for (addr = local_store->pebs_buffer_base;
+             addr < local_store->pebs_index;
+             addr += pebs_record_size)
+            handler((struct pebs_record *) addr, cpu);
+
+    /* Once the data has been processed, reset the index to the start */
+    local_store->pebs_index = local_store->pebs_buffer_base;
+
+    /* To allow PEBS to produce further interrupt, clear the overflow bit */
+    wrmsr_safe(MSR_CORE_PERF_GLOBAL_OVF_CTRL, MSR_CORE_PERF_GLOBAL_OVFBUFFR);
+
+    /* Also notify the APIC the interrupt has been handled */
+    apic_write(APIC_LVTPC, APIC_DM_NMI);
+
+    /* Finally re-enable PEBS */
+    wrmsr_safe(MSR_IA32_PEBS_ENABLE, pebs_enable | MSR_PEBS_ENABLE_MASK);
+    return 1;
+}
+
 
 
 /*
- * Initialize global data structures about performance monitoring counters.
- * This function need to be called once before any related function can work.
- * For now, we support only an ad-hoc configuration.
- * Return 0 in case of success.
- * The function can fail if using a CPU which is not supported.
+ * A boolean indicating if the PEBS facility initialization has already been
+ * called.
  */
-static int init_supported_pmcs(void)
-{
-    supported_pmcs_count = 1;
-    
-    supported_pmcs[0].perfctr = IA32_PERFCTR_START;
-    supported_pmcs[0].perfevtsel = IA32_PERFEVTSEL_START;
-    cpumask_clear(&supported_pmcs[0].usedmap);
+DEFINE_PER_CPU(int, pebs_facility_initialized);
 
+/*
+ * Initialize the PEBS components on the specified CPU.
+ * This function must be called before any other PEBS related functions.
+ * This function assume a total control of the Performance Counter register of
+ * the APIC Local Vector Table.
+ * Return 0 if the facility has been initialized.
+ */
+static int init_pebs_facility(int cpu)
+{
+    if ( per_cpu(pebs_facility_initialized, cpu) )
+        return 0;
+
+    if ( pebs_record_size == 0 )
+        pebs_record_size = PEBS_SIZE_HSW;
+
+    apic_write_cpu(APIC_LVTPC, APIC_DM_NMI, cpu);
+
+    per_cpu(pebs_facility_initialized, cpu) = 1;
     return 0;
 }
 
 
-static struct perf_counter *alloc_perf_counter(int cpu)
-{
-    struct perf_counter *pmc = NULL;
-    unsigned long i;
-    
-    for (i=0; i<supported_pmcs_count; i++)
-        if ( !cpumask_test_cpu(cpu, &supported_pmcs[i].usedmap) )
-        {
-            cpumask_set_cpu(cpu, &supported_pmcs[i].usedmap);
-            pmc = &supported_pmcs[i];
-            break;
-        }
 
-    return pmc;
+/*
+ * Initialize a PEBS control unit for the given cpus.
+ * The total amount of PEBS control unit is hardware limited so this function
+ * can fail if there is no more free resources on the specified cpus.
+ * Return 0 in case of success.
+ */
+int pebs_control_init(struct pebs_control *this, int cpu)
+{
+    if ( init_pebs_facility(cpu) )
+        goto err_init;
+
+    if ( !alloc_msr_pebs(cpu) )
+        goto err_init;
+
+    this->debug_store = get_debug_store(cpu);
+    if ( this->debug_store == NULL )
+        goto err_ds;
+
+    this->pebs_records = get_pebs_records(cpu);
+    if ( this->pebs_records == NULL )
+        goto err_pebs;
+    
+    this->enabled = 0;
+    this->handler = NULL;
+    this->cpu = cpu;
+
+    return 0;
+ err_pebs:
+    put_debug_store(cpu);
+ err_ds:
+    free_msr_pebs(cpu);
+ err_init:
+    return -1;
 }
 
-static void free_perf_counter(struct perf_counter *pmc, int cpu)
+/*
+ * Finalize a PEBS control unit.
+ * Free the hardware resources of the given control unit on the according cpus.
+ * Return 0 in case of success.
+ */
+int pebs_control_deinit(struct pebs_control *this)
 {
-    cpumask_clear_cpu(cpu, &pmc->usedmap);
+    if ( this->enabled )
+        pebs_control_disable(this);
+    
+    free_msr_pebs(this->cpu);
+    put_debug_store(this->cpu);
+    put_pebs_records(this->cpu);
+    
+    return 0;
+}
+
+
+/*
+ * Set the event the PEBS control unit samples.
+ * The list of events can be found in the Intel IA32 Developer's Manual.
+ * Be sure to specify an event defined for the current model of cpu.
+ * Return 0 in case of success.
+ */
+int pebs_control_setevent(struct pebs_control *this, unsigned long event)
+{
+    event &= MSR_PERFEVT_EVENT | MSR_PERFEVT_UMASK;
+
+    event |= MSR_PERFEVT_USR;
+    event |= MSR_PERFEVT_OS;
+    
+    wrmsr_cpu(MSR_PERFEVTSEL_PEBS, event, this->cpu);
+
+    return 0;
+}
+
+/*
+ * Set the sample rate for the PEBS control unit.
+ * The rate is the count of event triggering the sampled event to ignore before
+ * to tag an event to actually trigger the handler.
+ * More the rate is small, more often an interrupt will be triggered.
+ * Return 0 in case of success.
+ */
+int pebs_control_setrate(struct pebs_control *this, unsigned long rate)
+{
+    this->debug_store->pebs_counter_reset[DS_CTRRST_PEBS] = (u64) -rate;
+    wrmsr_cpu(MSR_PERFCTR_PEBS, -rate, this->cpu);
+    return 0;
+}
+
+/*
+ * Set the handler to call when the interrupt is triggered.
+ * If the old parameter is not NULL, it is filled with the previous handler.
+ * You can specify the new parameter as NULL so no handler will be called.
+ * Return 0 in case of success.
+ */
+int pebs_control_sethandler(struct pebs_control *this, pebs_handler_t new)
+{
+    per_cpu(pebs_handler, this->cpu) = new;
+    return 0;
+}
+
+
+/*
+ * Enable the PEBS control unit so it start the sampling.
+ * Return 0 in case of success.
+ */
+int pebs_control_enable(struct pebs_control *this)
+{
+    u64 val;
+    
+    if ( this->enabled )
+        return -1;
+
+    rdmsr_cpu(MSR_PERFEVTSEL_PEBS, &val, this->cpu);
+    wrmsr_cpu(MSR_PERFEVTSEL_PEBS, val | MSR_PERFEVT_EN, this->cpu);
+
+    rdmsr_cpu(MSR_IA32_PEBS_ENABLE, &val, this->cpu);
+    wrmsr_cpu(MSR_IA32_PEBS_ENABLE, val | MSR_PEBS_ENABLE_MASK, this->cpu);
+
+    this->enabled = 1;
+    return 0;
+}
+
+/*
+ * Disable the PEBS control unit so it does not sample anymore.
+ * Return 0 in case of success.
+ */
+int pebs_control_disable(struct pebs_control *this)
+{
+    u64 val;
+
+    if ( !this->enabled )
+        return -1;
+
+    rdmsr_cpu(MSR_IA32_PEBS_ENABLE, &val, this->cpu);
+    wrmsr_cpu(MSR_IA32_PEBS_ENABLE, val & ~MSR_PEBS_ENABLE_MASK, this->cpu);
+
+    rdmsr_cpu(MSR_PERFEVTSEL_PEBS, &val, this->cpu);
+    wrmsr_cpu(MSR_PERFEVTSEL_PEBS, val & ~MSR_PERFEVT_EN, this->cpu);
+
+    wrmsr_cpu(MSR_PERFCTR_PEBS, 0, this->cpu);
+
+    this->enabled = 0;
+    return 0;
 }
 
 
 
 
 
-/* /\* */
-/*  * Initialize a PEBS control unit for the given cpus. */
-/*  * The total amount of PEBS control unit is hardware limited so this function */
-/*  * can fail if there is no more free resources on the specified cpus. */
-/*  * Return 0 in case of success. */
-/*  *\/ */
-/* int pebs_control_init(struct pebs_control *this, cpumask_t *cpumask) */
-/* { */
-/*     struct pebs_records *pebs_records; */
-/*     struct pmc *pmc; */
+struct pebs_control pebsctr[NR_CPUS];
 
-/*     pebs_records = get_pebs_records(); */
-/*     if ( pebs_records == NULL ) */
-/*         goto err; */
-
-/*     pmc = alloc_pmc(); */
-/*     if ( pmc == NULL ) */
-/*         goto put; */
-
-/*     this->enabled = 0; */
-/*     this->pmc = pmc; */
-/*     this->handler = NULL; */
-    
-/*     return 0; */
-/*  put: */
-/*     put_pebs_records(); */
-/*  err: */
-/*     return -1; */
-/* } */
-
-/* /\* */
-/*  * Finalize a PEBS control unit. */
-/*  * Free the hardware resources of the given control unit on the according cpus. */
-/*  * Return 0 in case of success. */
-/*  *\/ */
-/* int pebs_control_deinit(struct pebs_control *this) */
-/* { */
-/*     if ( this->enabled ) */
-/*         pebs_control_disable(this); */
-/*     free_pmc(this->pmc); */
-/*     put_pebs_records(); */
-/*     return 0; */
-/* } */
-
-
-/* /\* */
-/*  * Set the event the PEBS control unit samples. */
-/*  * The list of events can be found in the Intel IA32 Developer's Manual. */
-/*  * Be sure to specify an event defined for the current model of cpu. */
-/*  * Return 0 in case of success. */
-/*  *\/ */
-/* int pebs_control_setevent(struct pebs_control *this, unsigned long event) */
-/* { */
-/*     if ( this ) {} */
-/*     if ( event ) {} */
-/*     return 0; */
-/* } */
-
-/* /\* */
-/*  * Set the sample rate for the PEBS control unit. */
-/*  * The rate is the count of event triggering the sampled event to ignore before */
-/*  * to tag an event to actually trigger the handler. */
-/*  * More the rate is small, more often an interrupt will be triggered. */
-/*  * Return 0 in case of success. */
-/*  *\/ */
-/* int pebs_control_setrate(struct pebs_control *this, unsigned long rate) */
-/* { */
-/*     if ( this ) {} */
-/*     if ( rate ) {} */
-/*     return 0; */
-/* } */
-
-/* /\* */
-/*  * Set the handler to call when the interrupt is triggered. */
-/*  * If the old parameter is not NULL, it is filled with the previous handler. */
-/*  * You can specify the new parameter as NULL so no handler will be called. */
-/*  * Return 0 in case of success. */
-/*  *\/ */
-/* int pebs_control_sethandler(struct pebs_control *this, pebs_handler_t new, */
-/*                             pebs_handler_t *old) */
-/* { */
-/*     if ( this ) {} */
-/*     if ( new ) {} */
-/*     if ( old ) {} */
-/*     return 0; */
-/* } */
-
-
-/* /\* */
-/*  * Enable the PEBS control unit so it start the sampling. */
-/*  * Return 0 in case of success. */
-/*  *\/ */
-/* int pebs_control_enable(struct pebs_control *this) */
-/* { */
-/*     if ( this ) {} */
-/*     return 0; */
-/* } */
-
-/* /\* */
-/*  * Disable the PEBS control unit so it does not sample anymore. */
-/*  * Return 0 in case of success. */
-/*  *\/ */
-/* int pebs_control_disable(struct pebs_control *this) */
-/* { */
-/*     if ( this ) {} */
-/*     return 0; */
-/* } */
-
-
-
-/* static struct pebs_control test_ctrl; */
-/* static struct debug_store *__debug_store; */
-/* static int __cpu; */
-
-/* static void __test_setup(void *v __attribute__((unused))) */
-/* { */
-/*     /\* int ret; *\/ */
-
-/*     /\* __debug_store = get_debug_store(); *\/ */
-/*     /\* printk("__debug_store = %p\n", __debug_store); *\/ */
-    
-/*     /\* ret = pebs_control_init(&test_ctrl); *\/ */
-/*     /\* printk("pebs_control_init() = %d\n", ret); *\/ */
-/* } */
-
-
-static struct perf_counter *pmcs[NR_CPUS];
+static void handler(struct pebs_record *record, int cpu)
+{
+    printk("CPU[%d] <= %lx at %lu\n", cpu, record->data_linear_address,
+           NOW());
+}
 
 void test_setup(void)
 {
-    int ret, cpu;
-    u64 test;
-
-    init_supported_pmcs();
+    int cpu;
     
-    rdmsr_safe(MSR_IA32_DS_AREA, test);
-    printk("test = %lx\n", test);
-
     for_each_cpu(cpu, &cpu_online_map)
     {
-        ret = alloc_debug_store(cpu);
-        printk("alloc_debug_store(%d) = %d\n", cpu, ret);
-        printk("  debug_store at %p\n", get_debug_store(cpu));
-
-        ret = alloc_pebs_records(cpu);
-        printk("alloc_pebs_records(%d) = %d\n", cpu, ret);
-        printk("  pebs_records at %p\n", get_pebs_records(cpu));
-
-        pmcs[cpu] = alloc_perf_counter(cpu);
-        printk("alloc_perf_counter(%d) = %p\n", cpu, pmcs[cpu]);
+        pebs_control_init(&pebsctr[cpu], cpu);
+        pebs_control_setevent(&pebsctr[cpu], PEBS_MUOPS | PEBS_MUOPS_ALLLD);
+        pebs_control_setrate(&pebsctr[cpu], 0x10000);
+        pebs_control_sethandler(&pebsctr[cpu], handler);
+        pebs_control_enable(&pebsctr[cpu]);
     }
-
-    rdmsr_safe(MSR_IA32_DS_AREA, test);
-    printk("test = %lx\n", test);
 }
-
-/* on_each_cpu(__test_setup, NULL, 1); */
-    /* printk("current = %d\n", smp_processor_id()); */
-    /* __test_setup(NULL); */
-
-/* static void __test_teardown(void *v __attribute__((unused))) */
-/* { */
-/*     /\* int ret; *\/ */
-
-/*     /\* put_debug_store(); *\/ */
-    
-/*     /\* ret = pebs_control_deinit(&test_ctrl); *\/ */
-/*     /\* printk("pebs_control_deinit() = %d\n", ret); *\/ */
-/* } */
 
 void test_teardown(void)
 {
-    int ret, cpu;
-    u64 test;
+    int cpu;
     
-    rdmsr_safe(MSR_IA32_DS_AREA, test);
-    printk("test = %lx\n", test);
-
     for_each_cpu(cpu, &cpu_online_map)
     {
-        ret = free_pebs_records(cpu);
-        printk("free_pebs_records(%d) = %d\n", cpu, ret);
-        
-        ret = free_debug_store(cpu);
-        printk("free_debug_store(%d) = %d\n", cpu, ret);
-
-        free_perf_counter(pmcs[cpu], cpu);
+        pebs_control_deinit(&pebsctr[cpu]);
     }
-/* on_each_cpu(__test_teardown, NULL, 1); */
-
-    rdmsr_safe(MSR_IA32_DS_AREA, test);
-    printk("test = %lx\n", test);
 }
 
  /*

@@ -29,13 +29,13 @@ struct pebs_record
 /* Handle a PEBS sample on the given cpu */
 typedef void (*pebs_handler_t)(struct pebs_record *record, int cpu);
 
-struct pmc;      /* opaque structure containing PMC informations */
-
 struct pebs_control
 {
-    int               enabled;               /* currently sampling */
-    struct pmc       *pmc;                   /* PMC used for the PEBS */
-    pebs_handler_t    handler;               /* callback for nmi interrupt */
+    int                   cpu;
+    int                   enabled;
+    struct debug_store   *debug_store;
+    struct pebs_record   *pebs_records;
+    pebs_handler_t        handler;             /* callback for nmi interrupt */
 };
 
 
@@ -45,7 +45,7 @@ struct pebs_control
  * can fail if there is no more free resources on the specified cpus.
  * Return 0 in case of success.
  */
-int pebs_control_init(struct pebs_control *this);
+int pebs_control_init(struct pebs_control *this, int cpu);
 
 /*
  * Finalize a PEBS control unit.
@@ -78,8 +78,7 @@ int pebs_control_setrate(struct pebs_control *this, unsigned long rate);
  * You can specify the new parameter as NULL so no handler will be called.
  * Return 0 in case of success.
  */
-int pebs_control_sethandler(struct pebs_control *this, pebs_handler_t new,
-                            pebs_handler_t *old);
+int pebs_control_sethandler(struct pebs_control *this, pebs_handler_t new);
 
 
 /*
@@ -97,5 +96,6 @@ int pebs_control_disable(struct pebs_control *this);
 
 void test_setup(void);
 void test_teardown(void);
+int nmi_pebs(int cpu);
 
 #endif /* ASM_X86__MONITOR_H */

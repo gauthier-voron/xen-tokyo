@@ -33,8 +33,15 @@
 
 /* Intel MSRs. Some also available on other CPUs */
 #define MSR_IA32_PERFCTR0		0x000000c1
+#define MSR_IA32_PERFCTR1               0x000000c2
+#define MSR_IA32_PERFCTR2               0x000000c3
+#define MSR_IA32_PERFCTR3               0x000000c4
 #define MSR_IA32_A_PERFCTR0		0x000004c1
 #define MSR_FSB_FREQ			0x000000cd
+#define MSR_IA32_PERFEVTSEL0            0x00000186
+#define MSR_IA32_PERFEVTSEL1            0x00000187
+#define MSR_IA32_PERFEVTSEL2            0x00000188
+#define MSR_IA32_PERFEVTSEL3            0x00000189
 
 #define MSR_NHM_SNB_PKG_CST_CFG_CTL	0x000000e2
 #define NHM_C3_AUTO_DEMOTE		(1UL << 25)
@@ -467,6 +474,15 @@
 #define MSR_CORE_PERF_GLOBAL_STATUS	0x0000038e
 #define MSR_CORE_PERF_GLOBAL_CTRL	0x0000038f
 #define MSR_CORE_PERF_GLOBAL_OVF_CTRL	0x00000390
+
+/* Intel Core-base CPU performance counters flags */
+#define MSR_CORE_PERF_GLOBAL_PMC0OVF    (1UL << 0)
+#define MSR_CORE_PERF_GLOBAL_PMC1OVF    (1UL << 1)
+#define MSR_CORE_PERF_GLOBAL_CTR0OVF    (1UL << 32)
+#define MSR_CORE_PERF_GLOBAL_CTR1OVF    (1UL << 33)
+#define MSR_CORE_PERF_GLOBAL_CTR2OVF    (1UL << 34)
+#define MSR_CORE_PERF_GLOBAL_OVFBUFFR   (1UL << 62)
+#define MSR_CORE_PERF_GLOBAL_CONDCHGD   (1UL << 63)
 
 /* Intel cpuid spoofing MSRs */
 #define MSR_INTEL_CPUID_FEATURE_MASK	0x00000478

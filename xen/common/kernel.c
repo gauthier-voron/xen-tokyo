@@ -8,6 +8,7 @@
 #include <xen/init.h>
 #include <xen/lib.h>
 #include <xen/errno.h>
+#include <xen/monitor.h>
 #include <xen/version.h>
 #include <xen/sched.h>
 #include <xen/paging.h>
@@ -227,6 +228,11 @@ void __init do_initcalls(void)
 #  define HYPERCALL_BIGOS_FLUSHTLB      -6
 #endif
 
+#ifdef BIGOS_PERF_COUNTING
+#  define HYPERCALL_BIGOS_PERF_ENABLE   -7
+#  define HYPERCALL_BIGOS_PERF_DISABLE  -8
+#endif
+
 DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     switch ( cmd )
@@ -365,6 +371,21 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return 0;
     }
 #endif /* BIGOS_MEMORY_MOVE */
+
+#ifdef BIGOS_PERF_COUNTING
+    case HYPERCALL_BIGOS_PERF_ENABLE:
+    {
+        printk("Enabling perf counting\n");
+        return enable_monitoring();
+    }
+
+    case HYPERCALL_BIGOS_PERF_DISABLE:
+    {
+        printk("Disable perf counting\n");
+        disable_monitoring();
+        return 0;
+    }
+#endif /* BIGOS_PERF_COUNTING */
 
     case XENVER_version:
     {

@@ -55,6 +55,7 @@
 #include <asm/atomic.h>
 #include <xen/bitops.h>
 #include <asm/desc.h>
+#include <asm/pebs.h>
 #include <asm/debugreg.h>
 #include <asm/smp.h>
 #include <asm/flushtlb.h>
@@ -3304,6 +3305,9 @@ void do_nmi(const struct cpu_user_regs *regs)
     unsigned char reason;
 
     ++nmi_count(cpu);
+
+    if ( nmi_pebs(cpu) )
+        return;
 
     if ( nmi_callback(regs, cpu) )
         return;

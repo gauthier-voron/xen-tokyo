@@ -59,6 +59,7 @@ obj-y += crash.o
 obj-y += tboot.o
 obj-y += hpet.o
 obj-y += xstate.o
+obj-y += pebs.o
 
 obj-$(crash_debug) += gdbstub.o
 

@@ -110,5 +110,7 @@
 
 /* Enable page move across NUMA nodes */
 #define BIGOS_MEMORY_MOVE
+/* Enable performance counting */
+#define BIGOS_PERF_COUNTING
 
 #endif /* __XEN_CONFIG_H__ */

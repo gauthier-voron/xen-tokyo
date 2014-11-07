@@ -52,10 +52,10 @@
 #include <xen/watchdog.h>
 #include <asm/system.h>
 #include <asm/io.h>
-#include <asm/monitor.h>
 #include <asm/atomic.h>
 #include <xen/bitops.h>
 #include <asm/desc.h>
+#include <asm/pebs.h>
 #include <asm/debugreg.h>
 #include <asm/smp.h>
 #include <asm/flushtlb.h>

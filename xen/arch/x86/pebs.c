@@ -1,22 +1,22 @@
 #include <asm/apic.h>
-#include <asm/monitor.h>
+#include <asm/pebs.h>
 #include <asm/msr.h>
-#include <asm/p2m.h>
 #include <xen/config.h>
 #include <xen/lib.h>
 #include <xen/mm.h>
 #include <xen/percpu.h>
-#include <xen/time.h>
 #include <xen/types.h>
 
 #define PEBS_SIZE_CORE   144        /* PEBS size for Intel Core & Intel Atom */
 #define PEBS_SIZE_NHM    176  /* PEBS size for Nehalem, Sandy and Ivy Bridge */
 #define PEBS_SIZE_HSW    192                        /* PEBS size for Haswell */
 
-#define PEBS_RECORD_MAX  8
-#define PEBS_RECORD_THR  1
 
-
+/*
+ * The debug store layout with an undefined amount of counter reset fields.
+ * This is so because the amount is implementation dependent.
+ * This layout is only accurate for 64-bits architectures.
+ */
 struct debug_store
 {
     u64 bts_buffer_base;
@@ -31,213 +31,6 @@ struct debug_store
 } __attribute__((packed));
 
 
-static size_t              pebs_size = 0;
-static struct debug_store *debug_store = NULL;
-static struct pebs_record *pebs_records = NULL;
-
-void debug_store_infos(void)
-{
-    printk("pebs_index = 0x%lx\n", debug_store->pebs_index);
-    printk("relative size = %lu bytes\n", debug_store->pebs_index
-           - debug_store->pebs_buffer_base);
-    printk("relative size = %lu records\n",
-           (debug_store->pebs_index - debug_store->pebs_buffer_base)
-           / pebs_size);
-}
-
-void debug_store_pouet(void)
-{
-    debug_store->pebs_index = debug_store->pebs_buffer_base;
-}
-
-void pebs_record_infos(void)
-{
-    printk("rflags = 0x%lx\n", pebs_records[0].flags);
-    printk("rip    = 0x%lx\n", pebs_records[0].ip);
-    printk("rax    = 0x%lx\n", pebs_records[0].ax);
-    printk("rbx    = 0x%lx\n", pebs_records[0].bx);
-    printk("rcx    = 0x%lx\n", pebs_records[0].cx);
-    printk("rdx    = 0x%lx\n", pebs_records[0].dx);
-    printk("rsi    = 0x%lx\n", pebs_records[0].si);
-    printk("rdi    = 0x%lx\n", pebs_records[0].di);
-    printk("r8     = 0x%lx\n", pebs_records[0].r8);
-    printk("r9     = 0x%lx\n", pebs_records[0].r9);
-    printk("r10    = 0x%lx\n", pebs_records[0].r10);
-    printk("r11    = 0x%lx\n", pebs_records[0].r11);
-    printk("r12    = 0x%lx\n", pebs_records[0].r12);
-    printk("r13    = 0x%lx\n", pebs_records[0].r13);
-    printk("r14    = 0x%lx\n", pebs_records[0].r14);
-    printk("r15    = 0x%lx\n", pebs_records[0].r15);
-    printk("dla    = 0x%lx\n", pebs_records[0].data_linear_address);
-    printk("dse    = 0x%lx\n", pebs_records[0].data_source_encoding);
-}
-
-
-
-int BIGOS_DEBUG_0 = 0;
-
-static int init_debug_store(void)
-{
-    pebs_size = PEBS_SIZE_HSW; /* arbitrary for testing */
-    debug_store = alloc_xenheap_pages(PAGE_ORDER_4K, 0);
-    pebs_records = alloc_xenheap_pages(PAGE_ORDER_4K, 0);
-
-    memset(debug_store, 0, PAGE_SIZE);
-    memset(pebs_records, 0, PAGE_SIZE);
-    
-    debug_store->pebs_buffer_base = (u64) pebs_records;
-    debug_store->pebs_index = (u64) pebs_records;
-    debug_store->pebs_absolute_maximum = (u64) pebs_records
-        + PEBS_RECORD_MAX * pebs_size;
-    debug_store->pebs_interrupt_threshold = (u64) pebs_records
-        + PEBS_RECORD_THR * pebs_size;
-
-    return wrmsr_safe(MSR_IA32_DS_AREA, (u64) debug_store);
-}
-
-static int init_pebs(void)
-{
-    int ret;
-
-    ret = wrmsr_safe(MSR_P6_PERFCTR0, -0x80000);
-    if (ret)
-        return ret;
-    debug_store->pebs_counter_reset[0] = -0x80000;
-
-    /* ret = wrmsr_safe(MSR_P6_EVNTSEL0, 0x4300c0); */
-    ret = wrmsr_safe(MSR_P6_EVNTSEL0, 0x4381d0);
-    return ret;
-}
-
-static int start_pebs(void)
-{
-    int ret;
-
-    ret = wrmsr_safe(MSR_IA32_PEBS_ENABLE, 0x1);
-
-    return ret;
-}
-
-
-void monitor_intel(void)
-{
-    int ret;
-    u64 val;
-    
-    printk("init debug store\n");
-    ret = init_debug_store();
-    printk("ret value = %d\n", ret);
-    rdmsr_safe(MSR_IA32_DS_AREA, val);
-    printk("DS_AREA = 0x%lx\n", val);
-
-    BIGOS_DEBUG_0 = 1;
-
-    printk("\n");
-    printk("apic\n");
-    printk("apic read = %x\n", apic_read(APIC_LVTPC));
-    printk("apic write : %x\n", APIC_DM_NMI);
-    apic_write(APIC_LVTPC, SET_APIC_DELIVERY_MODE(0, APIC_MODE_NMI));
-    printk("apic read = %x\n", apic_read(APIC_LVTPC));
-    
-    printk("\n");
-    printk("ds index = %lu\n", debug_store->pebs_index - debug_store->pebs_buffer_base);
-
-    printk("init pebs\n");
-    ret = init_pebs();
-    printk("ret value = %d\n", ret);
-    rdmsr_safe(MSR_P6_EVNTSEL0, val);
-    printk("EVNTSEL0 = 0x%lx\n", val);
-    rdmsr_safe(MSR_P6_PERFCTR0, val);
-    printk("PERFCTR0 = 0x%lx\n", val);
-
-    printk("\n");
-    printk("ds index = %lu\n", debug_store->pebs_index - debug_store->pebs_buffer_base);
-
-    printk("start pebs\n");
-    ret = start_pebs();
-    printk("ret value = %d\n", ret);
-    rdmsr_safe(MSR_IA32_PEBS_ENABLE, val);
-    printk("PEBS_ENABLE = 0x%lx\n", val);
-
-    printk("\n");
-    printk("ds index = %lu\n", debug_store->pebs_index - debug_store->pebs_buffer_base);
-
-    rdmsr_safe(MSR_P6_PERFCTR0, val);
-    printk("PERFCTR0 = 0x%lx\n", val);
-    rdmsr_safe(MSR_CORE_PERF_GLOBAL_STATUS, val);
-    printk("PERF_GLOBAL_STATUS = 0x%lx\n", val);
-    rdmsr_safe(MSR_CORE_PERF_GLOBAL_CTRL, val);
-    printk("PERF_GLOBAL_CTRL = 0x%lx\n", val);
-
-    /* for (i=0; i<256; i++) { */
-    /*     printk("%d ", i); */
-    /* } */
-    /* printk("\n"); */
-
-    /* rdmsr_safe(MSR_P6_PERFCTR0, val); */
-    /* printk("PERFCTR0 = 0x%lx\n", val); */
-    /* rdmsr_safe(MSR_CORE_PERF_GLOBAL_STATUS, val); */
-    /* printk("PERF_GLOBAL_STATUS = 0x%lx\n", val); */
-    /* rdmsr_safe(MSR_CORE_PERF_GLOBAL_CTRL, val); */
-    /* printk("PERF_GLOBAL_CTRL = 0x%lx\n", val); */
-
-    asm volatile ("xor %%rax, %%rax\n"
-                  "mov %0, %%rbx\n"
-                  "start_loop:\n"
-                  "cmp $0x80000, %%rax\n"
-                  "jge end_loop\n"
-                  "mov 0x0(%%rbx), %%rcx\n"
-                  "inc %%rax\n"
-                  "jmp start_loop\n"
-                  "end_loop:\n"
-                  : : "m" (pebs_records));
-    
-    rdmsr_safe(MSR_IA32_PEBS_ENABLE, val);
-    printk("PEBS_ENABLE = 0x%lx\n", val);
-    val &= ~(1UL);
-    wrmsr_safe(MSR_IA32_PEBS_ENABLE, val);
-    rdmsr_safe(MSR_IA32_PEBS_ENABLE, val);
-    printk("PEBS_ENABLE = 0x%lx\n", val);
-
-    rdmsr_safe(MSR_P6_PERFCTR0, val);
-    printk("PERFCTR0 = 0x%lx\n", val);
-    rdmsr_safe(MSR_CORE_PERF_GLOBAL_STATUS, val);
-    printk("PERF_GLOBAL_STATUS = 0x%lx\n", val);
-    rdmsr_safe(MSR_CORE_PERF_GLOBAL_CTRL, val);
-    printk("PERF_GLOBAL_CTRL = 0x%lx\n", val);
-    printk("\n");
-}
-
-int BIGOS_DEBUG_1 = 0;
-void demonitor(void)
-{
-    struct domain *d;
-    struct page_info *page;
-    unsigned long mfn;
-    p2m_type_t p2mt;
-
-    d = current->domain;
-    
-    page = virt_to_page(pebs_records);
-    mfn = page_to_mfn(page);
-    printk("pebs_records virt = %p\n", pebs_records);
-    printk("pebs_records mfn  = %lx\n", mfn);
-    BIGOS_DEBUG_1 = 1;
-    mfn = mfn_x(get_gfn_query(d, (unsigned long) pebs_records, &p2mt));
-    BIGOS_DEBUG_1 = 1;
-    printk("pebs_records mfn  = %lx\n", mfn);
-    printk("memory type = %x\n", p2mt);
-}
-
-
-
-
-
-
-
-
-
-
 static void __rdmsr_cpu(void *args)
 {
     u64 *ret = (u64 *) args;
@@ -247,6 +40,11 @@ static void __rdmsr_cpu(void *args)
     *ret = rdmsr_safe(*msr, *val);
 }
 
+/*
+ * Read the specified MSR on the specified CPU.
+ * Return 0 in case of success, otherwise the val output parameter is not
+ * modified.
+ */
 int rdmsr_cpu(u64 msr, u64 *val, int cpu)
 {
     cpumask_t cpumask;
@@ -275,6 +73,10 @@ static void __wrmsr_cpu(void *args)
     *ret = wrmsr_safe(*msr, *val);
 }
 
+/*
+ * Write on the specified register on the specified CPU.
+ * Return 0 in case of success.
+ */
 int wrmsr_cpu(u64 msr, u64 val, int cpu)
 {
     cpumask_t cpumask;
@@ -292,7 +94,6 @@ int wrmsr_cpu(u64 msr, u64 val, int cpu)
 }
 
 
-
 static void __apic_read_cpu(void *args)
 {
     u64 *ret = (u64 *) args;
@@ -301,6 +102,10 @@ static void __apic_read_cpu(void *args)
     *ret = (u64) apic_read((unsigned long) *reg);
 }
 
+/*
+ * Read the APIC register on the specified CPU.
+ * Return the read value.
+ */
 u32 apic_read_cpu(unsigned long reg, int cpu)
 {
     cpumask_t cpumask;
@@ -326,6 +131,9 @@ static void __apic_write_cpu(void *args)
     apic_write((unsigned long) *reg, (u32) *val);
 }
 
+/*
+ * Write on the APIC registers for the specified CPU.
+ */
 void apic_write_cpu(unsigned long reg, u32 val, int cpu)
 {
     cpumask_t cpumask;
@@ -563,39 +371,11 @@ static void free_msr_pebs(int cpu)
 #define MSR_PERFEVT_UMASK        (0xff00)
 #define MSR_PERFEVT_EVENT        (0xff)
 
-#define PEBS_INST                (0x00c1)
-#define  PEBS_INST_PDIST         (0x0100)
-#define PEBS_UOPS                (0x00c2)
-#define  PEBS_UOPS_ALL           (0x0100)
-#define  PEBS_UOPS_SLOT          (0x0200)
-#define PEBS_BRINST              (0x00c4)
-#define  PEBS_BRINST_COND        (0x0100)
-#define  PEBS_BRINST_NEARCL      (0x0200)
-#define  PEBS_BRINST_ALL         (0x0400)
-#define  PEBS_BRINST_NEARR       (0x0800)
-#define  PEBS_BRINST_NEART       (0x2000)
-#define PEBS_BRMISP              (0x00c5)
-#define  PEBS_BRMISP_COND        (0x0100)
-#define  PEBS_BRMISP_NEARCL      (0x0200)
-#define  PEBS_BRMISP_ALL         (0x0400)
-#define  PEBS_BRMISP_NOTTK       (0x1000)
-#define  PEBS_BRMISP_TAKEN       (0x2000)
-#define PEBS_MUOPS               (0x00d0)
-#define  PEBS_MUOPS_TLBMSLD      (0x1100)
-#define  PEBS_MUOPS_TLBMSST      (0x1200)
-#define  PEBS_MUOPS_LCKLD        (0x2100)
-#define  PEBS_MUOPS_SPLLD        (0x4100)
-#define  PEBS_MUOPS_SPLST        (0x4200)
-#define  PEBS_MUOPS_ALLLD        (0x8100)
-#define  PEBS_MUOPS_ALLST        (0x8200)
-#define PEBS_MLUOPS              (0x00d1)
-#define  PEBS_MLUOPS_LIHIT       (0x0100)
-#define  PEBS_MLUOPS_L2HIT       (0x0200)
-#define  PEBS_MLUOPS_L3HIT       (0x0300)
-#define  PEBS_MLUOPS_HITLFB      (0x4000)
 
 
-
+/*
+ * The PEBS user defined handler for each CPU.
+ */
 DEFINE_PER_CPU(pebs_handler_t, pebs_handler);
 
 int nmi_pebs(int cpu)
@@ -670,12 +450,6 @@ static int init_pebs_facility(int cpu)
 
 
 
-/*
- * Initialize a PEBS control unit for the given cpus.
- * The total amount of PEBS control unit is hardware limited so this function
- * can fail if there is no more free resources on the specified cpus.
- * Return 0 in case of success.
- */
 int pebs_control_init(struct pebs_control *this, int cpu)
 {
     if ( init_pebs_facility(cpu) )
@@ -691,9 +465,8 @@ int pebs_control_init(struct pebs_control *this, int cpu)
     this->pebs_records = get_pebs_records(cpu);
     if ( this->pebs_records == NULL )
         goto err_pebs;
-    
+
     this->enabled = 0;
-    this->handler = NULL;
     this->cpu = cpu;
 
     return 0;
@@ -705,49 +478,30 @@ int pebs_control_init(struct pebs_control *this, int cpu)
     return -1;
 }
 
-/*
- * Finalize a PEBS control unit.
- * Free the hardware resources of the given control unit on the according cpus.
- * Return 0 in case of success.
- */
 int pebs_control_deinit(struct pebs_control *this)
 {
     if ( this->enabled )
         pebs_control_disable(this);
-    
+
     free_msr_pebs(this->cpu);
     put_debug_store(this->cpu);
     put_pebs_records(this->cpu);
-    
+
     return 0;
 }
 
-
-/*
- * Set the event the PEBS control unit samples.
- * The list of events can be found in the Intel IA32 Developer's Manual.
- * Be sure to specify an event defined for the current model of cpu.
- * Return 0 in case of success.
- */
 int pebs_control_setevent(struct pebs_control *this, unsigned long event)
 {
     event &= MSR_PERFEVT_EVENT | MSR_PERFEVT_UMASK;
 
     event |= MSR_PERFEVT_USR;
     event |= MSR_PERFEVT_OS;
-    
+
     wrmsr_cpu(MSR_PERFEVTSEL_PEBS, event, this->cpu);
 
     return 0;
 }
 
-/*
- * Set the sample rate for the PEBS control unit.
- * The rate is the count of event triggering the sampled event to ignore before
- * to tag an event to actually trigger the handler.
- * More the rate is small, more often an interrupt will be triggered.
- * Return 0 in case of success.
- */
 int pebs_control_setrate(struct pebs_control *this, unsigned long rate)
 {
     this->debug_store->pebs_counter_reset[DS_CTRRST_PEBS] = (u64) -rate;
@@ -755,27 +509,16 @@ int pebs_control_setrate(struct pebs_control *this, unsigned long rate)
     return 0;
 }
 
-/*
- * Set the handler to call when the interrupt is triggered.
- * If the old parameter is not NULL, it is filled with the previous handler.
- * You can specify the new parameter as NULL so no handler will be called.
- * Return 0 in case of success.
- */
 int pebs_control_sethandler(struct pebs_control *this, pebs_handler_t new)
 {
     per_cpu(pebs_handler, this->cpu) = new;
     return 0;
 }
 
-
-/*
- * Enable the PEBS control unit so it start the sampling.
- * Return 0 in case of success.
- */
 int pebs_control_enable(struct pebs_control *this)
 {
     u64 val;
-    
+
     if ( this->enabled )
         return -1;
 
@@ -789,10 +532,6 @@ int pebs_control_enable(struct pebs_control *this)
     return 0;
 }
 
-/*
- * Disable the PEBS control unit so it does not sample anymore.
- * Return 0 in case of success.
- */
 int pebs_control_disable(struct pebs_control *this)
 {
     u64 val;
@@ -810,42 +549,6 @@ int pebs_control_disable(struct pebs_control *this)
 
     this->enabled = 0;
     return 0;
-}
-
-
-
-
-
-struct pebs_control pebsctr[NR_CPUS];
-
-static void handler(struct pebs_record *record, int cpu)
-{
-    printk("CPU[%d] <= %lx at %lu\n", cpu, record->data_linear_address,
-           NOW());
-}
-
-void test_setup(void)
-{
-    int cpu;
-    
-    for_each_cpu(cpu, &cpu_online_map)
-    {
-        pebs_control_init(&pebsctr[cpu], cpu);
-        pebs_control_setevent(&pebsctr[cpu], PEBS_MUOPS | PEBS_MUOPS_ALLLD);
-        pebs_control_setrate(&pebsctr[cpu], 0x10000);
-        pebs_control_sethandler(&pebsctr[cpu], handler);
-        pebs_control_enable(&pebsctr[cpu]);
-    }
-}
-
-void test_teardown(void)
-{
-    int cpu;
-    
-    for_each_cpu(cpu, &cpu_online_map)
-    {
-        pebs_control_deinit(&pebsctr[cpu]);
-    }
 }
 
  /*

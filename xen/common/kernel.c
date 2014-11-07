@@ -8,13 +8,13 @@
 #include <xen/init.h>
 #include <xen/lib.h>
 #include <xen/errno.h>
+#include <xen/monitor.h>
 #include <xen/version.h>
 #include <xen/sched.h>
 #include <xen/paging.h>
 #include <xen/nmi.h>
 #include <xen/guest_access.h>
 #include <xen/hypercall.h>
-#include <asm/monitor.h>
 #include <asm/current.h>
 #include <public/nmi.h>
 #include <public/version.h>
@@ -233,8 +233,6 @@ void __init do_initcalls(void)
 #  define HYPERCALL_BIGOS_PERF_DISABLE  -8
 #endif
 
-extern void demonitor(void);
-
 DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     switch ( cmd )
@@ -378,18 +376,17 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case HYPERCALL_BIGOS_PERF_ENABLE:
     {
         printk("Enabling perf counting\n");
-        test_setup();
-        return 0;
+        return enable_monitoring();
     }
 
     case HYPERCALL_BIGOS_PERF_DISABLE:
     {
         printk("Disable perf counting\n");
-        test_teardown();
+        disable_monitoring();
         return 0;
     }
 #endif /* BIGOS_PERF_COUNTING */
-    
+
     case XENVER_version:
     {
         return (xen_major_version() << 16) | xen_minor_version();

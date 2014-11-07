@@ -1,9 +1,52 @@
-#ifndef ASM_X86__MONITOR_H
-#define ASM_X86__MONITOR_H
-
-void monitor_intel(void);
+#ifndef ASM_X86__PEBS_H
+#define ASM_X86__PEBS_H
 
 
+#include <xen/types.h>
+
+
+/*
+ * Some events and their umasks which can be sampled with PEBS.
+ * For more informations, please refers to the Intel IA32 Developer's Manual.
+ */
+#define PEBS_INST                (0x00c1)
+#define  PEBS_INST_PDIST         (0x0100)
+#define PEBS_UOPS                (0x00c2)
+#define  PEBS_UOPS_ALL           (0x0100)
+#define  PEBS_UOPS_SLOT          (0x0200)
+#define PEBS_BRINST              (0x00c4)
+#define  PEBS_BRINST_COND        (0x0100)
+#define  PEBS_BRINST_NEARCL      (0x0200)
+#define  PEBS_BRINST_ALL         (0x0400)
+#define  PEBS_BRINST_NEARR       (0x0800)
+#define  PEBS_BRINST_NEART       (0x2000)
+#define PEBS_BRMISP              (0x00c5)
+#define  PEBS_BRMISP_COND        (0x0100)
+#define  PEBS_BRMISP_NEARCL      (0x0200)
+#define  PEBS_BRMISP_ALL         (0x0400)
+#define  PEBS_BRMISP_NOTTK       (0x1000)
+#define  PEBS_BRMISP_TAKEN       (0x2000)
+#define PEBS_MUOPS               (0x00d0)
+#define  PEBS_MUOPS_TLBMSLD      (0x1100)
+#define  PEBS_MUOPS_TLBMSST      (0x1200)
+#define  PEBS_MUOPS_LCKLD        (0x2100)
+#define  PEBS_MUOPS_SPLLD        (0x4100)
+#define  PEBS_MUOPS_SPLST        (0x4200)
+#define  PEBS_MUOPS_ALLLD        (0x8100)
+#define  PEBS_MUOPS_ALLST        (0x8200)
+#define PEBS_MLUOPS              (0x00d1)
+#define  PEBS_MLUOPS_LIHIT       (0x0100)
+#define  PEBS_MLUOPS_L2HIT       (0x0200)
+#define  PEBS_MLUOPS_L3HIT       (0x0300)
+#define  PEBS_MLUOPS_HITLFB      (0x4000)
+
+
+/*
+ * The record for a PEBS event.
+ * The cpu registers ip, ax, bx etc... contains the cpu state for the
+ * instruction following the sampled one.
+ * The other fields are standing for the sampled instruction.
+ */
 struct pebs_record
 {
     /* fields available for all 64 bits architectures */
@@ -24,18 +67,27 @@ struct pebs_record
     u64 tx_abort_information;
 } __attribute__((packed));
 
+/*
+ * Handle an NMI, checking if the reason is PEBS and then, dispatching to
+ * appropriate handlers.
+ */
+int nmi_pebs(int cpu);
+
 
 /* NMI pebs sample handler type */
 /* Handle a PEBS sample on the given cpu */
 typedef void (*pebs_handler_t)(struct pebs_record *record, int cpu);
 
+/*
+ * A pebs controller object.
+ * This should be used as an opaque interface to control PEBS mechanisms.
+ */
 struct pebs_control
 {
-    int                   cpu;
-    int                   enabled;
-    struct debug_store   *debug_store;
-    struct pebs_record   *pebs_records;
-    pebs_handler_t        handler;             /* callback for nmi interrupt */
+    int                   cpu;                 /* on what cpu the PEBS run */
+    int                   enabled;             /* is the PEBS running */
+    struct debug_store   *debug_store;         /* cpu ds area content */
+    struct pebs_record   *pebs_records;        /* records array location */
 };
 
 
@@ -94,8 +146,4 @@ int pebs_control_enable(struct pebs_control *this);
 int pebs_control_disable(struct pebs_control *this);
 
 
-void test_setup(void);
-void test_teardown(void);
-int nmi_pebs(int cpu);
-
-#endif /* ASM_X86__MONITOR_H */
+#endif

@@ -450,6 +450,15 @@ static int init_pebs_facility(int cpu)
 
 
 
+int pebs_capable(void)
+{
+    if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
+        return 0;
+    if ( !test_bit(X86_FEATURE_DS, boot_cpu_data.x86_capability) )
+        return 0;
+    return 1;
+}
+
 int pebs_control_init(struct pebs_control *this, int cpu)
 {
     if ( init_pebs_facility(cpu) )

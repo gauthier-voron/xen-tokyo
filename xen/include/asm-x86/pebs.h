@@ -91,7 +91,11 @@ struct pebs_control
 };
 
 
-#define pebs_capable()   (0)
+/*
+ * Indicate if the boot cpu can use the PEBS facility.
+ * Return 1 if PEBS is usable, 0 otherwise.
+ */
+int pebs_capable(void);
 
 /*
  * Initialize a PEBS control unit for the given cpus.

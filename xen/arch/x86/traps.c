@@ -55,6 +55,7 @@
 #include <asm/atomic.h>
 #include <xen/bitops.h>
 #include <asm/desc.h>
+#include <asm/ibs.h>
 #include <asm/pebs.h>
 #include <asm/debugreg.h>
 #include <asm/smp.h>
@@ -3306,7 +3307,9 @@ void do_nmi(const struct cpu_user_regs *regs)
 
     ++nmi_count(cpu);
 
-    if ( nmi_pebs(cpu) )
+    if ( pebs_capable() && nmi_pebs(cpu) )
+        return;
+    if ( ibs_capable() && nmi_ibs(cpu) )
         return;
 
     if ( nmi_callback(regs, cpu) )

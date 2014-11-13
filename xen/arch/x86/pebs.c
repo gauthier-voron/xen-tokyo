@@ -270,8 +270,7 @@ static struct pebs_record *get_pebs_records(int cpu)
     ds->pebs_buffer_base = base;
     ds->pebs_index = base;
     ds->pebs_absolute_maximum = base + PAGE_SIZE;
-    ds->pebs_interrupt_threshold = base + PAGE_SIZE;
-    ds->pebs_interrupt_threshold -= PAGE_SIZE % pebs_record_size;
+    ds->pebs_interrupt_threshold = base + pebs_record_size;
 
     get_debug_store(cpu);
 
@@ -376,13 +375,13 @@ static void free_msr_pebs(int cpu)
 /*
  * The PEBS user defined handler for each CPU.
  */
-DEFINE_PER_CPU(pebs_handler_t, pebs_handler);
+static void (*pebs_handler)(struct pebs_record *record, int cpu);
 
 int nmi_pebs(int cpu)
 {
     u64 pebs_enable, global_status, ds_area, addr;
     struct debug_store *local_store;
-    pebs_handler_t handler;
+    void (*handler)(struct pebs_record *, int);
 
     /* Start by disabling PEBS while handling the interrupt */
     rdmsr_safe(MSR_IA32_PEBS_ENABLE, pebs_enable);
@@ -398,7 +397,7 @@ int nmi_pebs(int cpu)
     local_store = (struct debug_store *) ds_area;
 
     /* If there is a handler, then apply it to every records */
-    handler = per_cpu(pebs_handler, cpu);
+    handler = pebs_handler;
     if ( handler != NULL )
         for (addr = local_store->pebs_buffer_base;
              addr < local_store->pebs_index;
@@ -449,25 +448,36 @@ static int init_pebs_facility(int cpu)
 }
 
 
+static int pebs_enabled = 0;
 
-int pebs_control_init(struct pebs_control *this, int cpu)
+
+int pebs_capable(void)
 {
-    if ( init_pebs_facility(cpu) )
-        goto err_init;
+    if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL )
+        return 0;
+    if ( !test_bit(X86_FEATURE_DS, boot_cpu_data.x86_capability) )
+        return 0;
+    return 1;
+}
 
-    if ( !alloc_msr_pebs(cpu) )
-        goto err_init;
+int pebs_acquire(void)
+{
+    int cpu, upc;
 
-    this->debug_store = get_debug_store(cpu);
-    if ( this->debug_store == NULL )
-        goto err_ds;
+    if ( !pebs_capable() )
+        return -1;
 
-    this->pebs_records = get_pebs_records(cpu);
-    if ( this->pebs_records == NULL )
-        goto err_pebs;
-
-    this->enabled = 0;
-    this->cpu = cpu;
+    for_each_online_cpu(cpu)
+    {
+        if ( init_pebs_facility(cpu) )
+            goto err_init;
+        if ( !alloc_msr_pebs(cpu) )
+            goto err_init;
+        if ( get_debug_store(cpu) == NULL )
+            goto err_ds;
+        if ( get_pebs_records(cpu) == NULL )
+            goto err_pebs;
+    }
 
     return 0;
  err_pebs:
@@ -475,80 +485,102 @@ int pebs_control_init(struct pebs_control *this, int cpu)
  err_ds:
     free_msr_pebs(cpu);
  err_init:
+    for_each_online_cpu(upc)
+    {
+        if ( upc == cpu )
+            break;
+        put_pebs_records(cpu);
+        put_debug_store(cpu);
+        free_msr_pebs(cpu);
+    }
     return -1;
 }
 
-int pebs_control_deinit(struct pebs_control *this)
+void pebs_release(void)
 {
-    if ( this->enabled )
-        pebs_control_disable(this);
+    int cpu;
 
-    free_msr_pebs(this->cpu);
-    put_debug_store(this->cpu);
-    put_pebs_records(this->cpu);
+    if ( pebs_enabled )
+        pebs_disable();
+
+    for_each_online_cpu(cpu)
+    {
+        put_pebs_records(cpu);
+        put_debug_store(cpu);
+        free_msr_pebs(cpu);
+    }
+}
+
+int pebs_setevent(unsigned long event)
+{
+    int cpu;
+
+    for_each_online_cpu(cpu)
+    {
+        event &= MSR_PERFEVT_EVENT | MSR_PERFEVT_UMASK;
+        event |= MSR_PERFEVT_USR;
+        event |= MSR_PERFEVT_OS;
+        wrmsr_cpu(MSR_PERFEVTSEL_PEBS, event, cpu);
+    }
 
     return 0;
 }
 
-int pebs_control_setevent(struct pebs_control *this, unsigned long event)
+int pebs_setrate(unsigned long rate)
 {
-    event &= MSR_PERFEVT_EVENT | MSR_PERFEVT_UMASK;
+    int cpu;
 
-    event |= MSR_PERFEVT_USR;
-    event |= MSR_PERFEVT_OS;
-
-    wrmsr_cpu(MSR_PERFEVTSEL_PEBS, event, this->cpu);
+    for_each_online_cpu(cpu)
+    {
+        get_debug_store(cpu)->pebs_counter_reset[DS_CTRRST_PEBS] = (u64) -rate;
+        put_debug_store(cpu);
+        wrmsr_cpu(MSR_PERFCTR_PEBS, -rate, cpu);
+    }
 
     return 0;
 }
 
-int pebs_control_setrate(struct pebs_control *this, unsigned long rate)
+int pebs_sethandler(void (*handler)(struct pebs_record *record, int cpu))
 {
-    this->debug_store->pebs_counter_reset[DS_CTRRST_PEBS] = (u64) -rate;
-    wrmsr_cpu(MSR_PERFCTR_PEBS, -rate, this->cpu);
+    pebs_handler = handler;
     return 0;
 }
 
-int pebs_control_sethandler(struct pebs_control *this, pebs_handler_t new)
+int pebs_enable(void)
 {
-    per_cpu(pebs_handler, this->cpu) = new;
-    return 0;
-}
-
-int pebs_control_enable(struct pebs_control *this)
-{
+    int cpu;
     u64 val;
 
-    if ( this->enabled )
-        return -1;
+    for_each_online_cpu(cpu)
+    {
+        rdmsr_cpu(MSR_PERFEVTSEL_PEBS, &val, cpu);
+        wrmsr_cpu(MSR_PERFEVTSEL_PEBS, val | MSR_PERFEVT_EN, cpu);
 
-    rdmsr_cpu(MSR_PERFEVTSEL_PEBS, &val, this->cpu);
-    wrmsr_cpu(MSR_PERFEVTSEL_PEBS, val | MSR_PERFEVT_EN, this->cpu);
+        rdmsr_cpu(MSR_IA32_PEBS_ENABLE, &val, cpu);
+        wrmsr_cpu(MSR_IA32_PEBS_ENABLE, val | MSR_PEBS_ENABLE_MASK, cpu);
+    }
 
-    rdmsr_cpu(MSR_IA32_PEBS_ENABLE, &val, this->cpu);
-    wrmsr_cpu(MSR_IA32_PEBS_ENABLE, val | MSR_PEBS_ENABLE_MASK, this->cpu);
-
-    this->enabled = 1;
+    pebs_enabled = 1;
     return 0;
 }
 
-int pebs_control_disable(struct pebs_control *this)
+void pebs_disable(void)
 {
+    int cpu;
     u64 val;
 
-    if ( !this->enabled )
-        return -1;
+    for_each_online_cpu(cpu)
+    {
+        rdmsr_cpu(MSR_IA32_PEBS_ENABLE, &val, cpu);
+        wrmsr_cpu(MSR_IA32_PEBS_ENABLE, val & ~MSR_PEBS_ENABLE_MASK, cpu);
 
-    rdmsr_cpu(MSR_IA32_PEBS_ENABLE, &val, this->cpu);
-    wrmsr_cpu(MSR_IA32_PEBS_ENABLE, val & ~MSR_PEBS_ENABLE_MASK, this->cpu);
+        rdmsr_cpu(MSR_PERFEVTSEL_PEBS, &val, cpu);
+        wrmsr_cpu(MSR_PERFEVTSEL_PEBS, val & ~MSR_PERFEVT_EN, cpu);
 
-    rdmsr_cpu(MSR_PERFEVTSEL_PEBS, &val, this->cpu);
-    wrmsr_cpu(MSR_PERFEVTSEL_PEBS, val & ~MSR_PERFEVT_EN, this->cpu);
+        wrmsr_cpu(MSR_PERFCTR_PEBS, 0, cpu);
+    }
 
-    wrmsr_cpu(MSR_PERFCTR_PEBS, 0, this->cpu);
-
-    this->enabled = 0;
-    return 0;
+    pebs_enabled = 0;
 }
 
  /*

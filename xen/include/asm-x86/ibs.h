@@ -104,7 +104,7 @@ int nmi_ibs(int cpu);
 
 
 /*
- * Indicate if the current cpu can use the IBS facility.
+ * Indicate if the boot cpu can use the IBS facility.
  * Return 1 if IBS is usable, 0 otherwise.
  */
 int ibs_capable(void);

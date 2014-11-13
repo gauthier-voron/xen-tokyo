@@ -4,7 +4,7 @@
 #include <xen/lib.h>
 #include <xen/percpu.h>
 
-DEFINE_PER_CPU(struct pebs_control, pebs_control);
+/* DEFINE_PER_CPU(struct pebs_control, pebs_control); */
 
 static void pebs_nmi_handler(struct pebs_record *record, int cpu)
 {
@@ -13,28 +13,24 @@ static void pebs_nmi_handler(struct pebs_record *record, int cpu)
 
 static int enable_monitoring_pebs(void)
 {
-    int cpu;
-    struct pebs_control *pbct;
+    int ret;
 
-    for_each_cpu(cpu, &cpu_online_map)
-    {
-        pbct = &per_cpu(pebs_control, cpu);
-        pebs_control_init(pbct, cpu);
-        pebs_control_setevent(pbct, PEBS_MUOPS | PEBS_MUOPS_ALLLD);
-        pebs_control_setrate(pbct, 0x10000);
-        pebs_control_sethandler(pbct, pebs_nmi_handler);
-        pebs_control_enable(pbct);
-    }
+    ret = pebs_acquire();
+    if ( ret )
+        return ret;
+
+    pebs_setevent(PEBS_MUOPS | PEBS_MUOPS_ALLLD);
+    pebs_setrate(0x10000);
+    pebs_sethandler(pebs_nmi_handler);
+    pebs_enable();
 
     return 0;
 }
 
 static void disable_monitoring_pebs(void)
 {
-    int cpu;
-
-    for_each_cpu(cpu, &cpu_online_map)
-        pebs_control_deinit(&per_cpu(pebs_control, cpu));
+    pebs_disable();
+    pebs_release();
 }
 
 

@@ -91,6 +91,8 @@ struct pebs_control
 };
 
 
+#define pebs_capable()   (0)
+
 /*
  * Initialize a PEBS control unit for the given cpus.
  * The total amount of PEBS control unit is hardware limited so this function

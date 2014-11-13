@@ -74,23 +74,6 @@ struct pebs_record
 int nmi_pebs(int cpu);
 
 
-/* NMI pebs sample handler type */
-/* Handle a PEBS sample on the given cpu */
-typedef void (*pebs_handler_t)(struct pebs_record *record, int cpu);
-
-/*
- * A pebs controller object.
- * This should be used as an opaque interface to control PEBS mechanisms.
- */
-struct pebs_control
-{
-    int                   cpu;                 /* on what cpu the PEBS run */
-    int                   enabled;             /* is the PEBS running */
-    struct debug_store   *debug_store;         /* cpu ds area content */
-    struct pebs_record   *pebs_records;        /* records array location */
-};
-
-
 /*
  * Indicate if the boot cpu can use the PEBS facility.
  * Return 1 if PEBS is usable, 0 otherwise.
@@ -98,58 +81,55 @@ struct pebs_control
 int pebs_capable(void);
 
 /*
- * Initialize a PEBS control unit for the given cpus.
- * The total amount of PEBS control unit is hardware limited so this function
- * can fail if there is no more free resources on the specified cpus.
- * Return 0 in case of success.
+ * Reserve the PEBS facility resources.
+ * This function should be called before any attempt tu use the PEBS facility.
+ * Return 0 if the PEBS facility has been reserved.
  */
-int pebs_control_init(struct pebs_control *this, int cpu);
+int pebs_acquire(void);
 
 /*
- * Finalize a PEBS control unit.
- * Free the hardware resources of the given control unit on the according cpus.
- * Return 0 in case of success.
+ * Release the PEBS facility resources.
+ * This function should be called after a successfull return of pebs_acquire(),
+ * once the PEBS facility is no longer used.
  */
-int pebs_control_deinit(struct pebs_control *this);
-
+void pebs_release(void);
 
 /*
- * Set the event the PEBS control unit samples.
+ * Set the event type to be sampled.
  * The list of events can be found in the Intel IA32 Developer's Manual.
  * Be sure to specify an event defined for the current model of cpu.
  * Return 0 in case of success.
  */
-int pebs_control_setevent(struct pebs_control *this, unsigned long event);
+int pebs_setevent(unsigned long event);
 
 /*
  * Set the sample rate for the PEBS control unit.
  * The rate is the count of event triggering the sampled event to ignore before
  * to tag an event to actually trigger the handler.
- * More the rate is small, more often an interrupt will be triggered.
+ * More the rate is low, more the NMI will happen often.
+ * Be carefull, a low rate can freeze the machine in infinite NMI.
  * Return 0 in case of success.
  */
-int pebs_control_setrate(struct pebs_control *this, unsigned long rate);
+int pebs_setrate(unsigned long rate);
 
 /*
- * Set the handler to call when the interrupt is triggered.
- * If the old parameter is not NULL, it is filled with the previous handler.
- * You can specify the new parameter as NULL so no handler will be called.
+ * Set the handler to be called at ech sampling.
+ * The handler is called in an NMI context.
  * Return 0 in case of success.
  */
-int pebs_control_sethandler(struct pebs_control *this, pebs_handler_t new);
+int pebs_sethandler(void (*handler)(struct pebs_record *record, int cpu));
 
 
 /*
- * Enable the PEBS control unit so it start the sampling.
+ * Start to sample.
  * Return 0 in case of success.
  */
-int pebs_control_enable(struct pebs_control *this);
+int pebs_enable(void);
 
 /*
- * Disable the PEBS control unit so it does not sample anymore.
- * Return 0 in case of success.
+ * Stop to sample.
  */
-int pebs_control_disable(struct pebs_control *this);
+void pebs_disable(void);
 
 
 #endif

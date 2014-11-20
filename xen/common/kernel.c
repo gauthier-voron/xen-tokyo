@@ -16,6 +16,7 @@
 #include <xen/guest_access.h>
 #include <xen/hypercall.h>
 #include <asm/current.h>
+#include <asm/msr.h>
 #include <public/nmi.h>
 #include <public/version.h>
 
@@ -222,6 +223,11 @@ void __init do_initcalls(void)
  * Simple hypercalls.
  */
 
+#ifdef BIGOS_DIRECT_MSR
+#  define HYPERCALL_BIGOS_RDMSR         -2
+#  define HYPERCALL_BIGOS_WRMSR         -3
+#endif
+
 #ifdef BIGOS_MEMORY_MOVE
 #  define HYPERCALL_BIGOS_PTSTAT        -4
 #  define HYPERCALL_BIGOS_PTSELFMOVE    -5
@@ -233,10 +239,140 @@ void __init do_initcalls(void)
 #  define HYPERCALL_BIGOS_PERF_DISABLE  -8
 #endif
 
+
+#ifdef BIGOS_DIRECT_MSR
+#  ifndef COMPAT
+
+static void bigos_rdmsr(void *args)
+{
+    int ret;
+    unsigned long *addr = (unsigned long *) args;
+    unsigned long ncpu = smp_processor_id();
+    unsigned long *slot = addr + 1 + ncpu;
+
+    ret = rdmsr_safe(*addr, *slot);
+    if ( ret )
+        *slot = (unsigned long) -1;
+}
+
+static void bigos_wrmsr(void *args)
+{
+    int ret;
+    unsigned long *addr = (unsigned long *) args;
+    unsigned long *new = addr + 1;
+    unsigned long ncpu = smp_processor_id();
+    unsigned long *slot = new + 1 + ncpu;
+    unsigned long old;
+
+    ret = rdmsr_safe(*addr, old);
+    if ( ret )
+    {
+        *slot = (unsigned long) -1;
+        return;
+    }
+
+    ret = wrmsr_safe(*addr, *new);
+    if ( ret )
+    {
+        *slot = (unsigned long) -1;
+        return;
+    }
+
+    *slot = old;
+}
+
+#  endif
+#endif
+
+
 DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     switch ( cmd )
     {
+
+#ifdef BIGOS_DIRECT_MSR
+#  ifndef COMPAT
+
+    case HYPERCALL_BIGOS_RDMSR:
+    {
+        static unsigned long maxcpu = 0;
+        unsigned long arr[2 + NR_CPUS];
+        unsigned long ipi[1 + NR_CPUS];
+        unsigned long addr, nrcpus, i;
+        cpumask_t cpumask;
+
+        if ( maxcpu == 0 )
+            for_each_online_cpu(maxcpu) {}
+
+        if ( copy_from_guest(arr, arg, 2) )
+            return -EFAULT;
+        addr = arr[0];
+        nrcpus = arr[1];
+        if ( nrcpus > NR_CPUS )
+            return -EFAULT;
+        if ( copy_from_guest(arr, arg, 2 + nrcpus) )
+            return -EFAULT;
+
+        cpumask_clear(&cpumask);
+        for (i=0; i<nrcpus; i++)
+        {
+            if ( arr[2+i] >= maxcpu )
+                return -EFAULT;
+            cpumask_set_cpu(arr[2+i], &cpumask);
+        }
+        ipi[0] = addr;
+        on_selected_cpus(&cpumask, bigos_rdmsr, ipi, 1);
+        for (i=0; i<nrcpus; i++)
+            arr[2+i] = ipi[1 + arr[2+i]];
+
+        if ( copy_to_guest(arg, arr, 2 + nrcpus) )
+            return -EFAULT;
+
+        return 0;
+    }
+
+    case HYPERCALL_BIGOS_WRMSR:
+    {
+        static unsigned long maxcpu = 0;
+        unsigned long arr[3 + NR_CPUS];
+        unsigned long ipi[2 + NR_CPUS];
+        unsigned long addr, new, nrcpus, i;
+        cpumask_t cpumask;
+
+        if ( maxcpu == 0 )
+            for_each_online_cpu(maxcpu) {}
+
+        if ( copy_from_guest(arr, arg, 3) )
+            return -EFAULT;
+        addr = arr[0];
+        new = arr[1];
+        nrcpus = arr[2];
+        if ( nrcpus > NR_CPUS )
+            return -EFAULT;
+        if ( copy_from_guest(arr, arg, 3 + nrcpus) )
+            return -EFAULT;
+
+        cpumask_clear(&cpumask);
+        for (i=0; i<nrcpus; i++)
+        {
+            if ( arr[3+i] >= maxcpu )
+                return -EFAULT;
+            cpumask_set_cpu(arr[3+i], &cpumask);
+        }
+        ipi[0] = addr;
+        ipi[1] = new;
+        on_selected_cpus(&cpumask, bigos_wrmsr, ipi, 1);
+        for (i=0; i<nrcpus; i++)
+            arr[3+i] = ipi[2 + arr[3+i]];
+
+        if ( copy_to_guest(arg, arr, 3 + nrcpus) )
+            return -EFAULT;
+
+        return 0;
+    }
+
+#  endif
+#endif
 
 #ifdef BIGOS_MEMORY_MOVE
     /*

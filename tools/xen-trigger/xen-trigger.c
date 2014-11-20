@@ -96,13 +96,13 @@ int main(int argc, const char **argv)
 
 	printf("ret = x%x / u%d\n", ret, ret);
 
-	for (i=1; i<argc; i++)
+	for (i=2; i<argc; i++)
 		switch (argv[i][0]) {
 		case 'x':
-			printf("x%lx\n", args[i-1]);
+			printf("x%lx\n", args[i-2]);
 			break;
 		case 'u':
-			printf("u%lu\n", args[i-1]);
+			printf("u%lu\n", args[i-2]);
 			break;
 		}
 

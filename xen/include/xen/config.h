@@ -108,6 +108,8 @@
 #define FLASK_AVC_STATS 1
 #endif
 
+/* Enable direct access to MSRs */
+#define BIGOS_DIRECT_MSR
 /* Enable page move across NUMA nodes */
 #define BIGOS_MEMORY_MOVE
 /* Enable performance counting */

@@ -4,33 +4,31 @@
 #include <xen/lib.h>
 #include <xen/percpu.h>
 
-/* DEFINE_PER_CPU(struct pebs_control, pebs_control); */
-
-static void pebs_nmi_handler(struct pebs_record *record, int cpu)
-{
-    printk("CPU[%d] <= 0x%lx\n", cpu, record->data_linear_address);
-}
+/* static void pebs_nmi_handler(struct pebs_record *record, int cpu) */
+/* { */
+/*     printk("CPU[%d] <= 0x%lx\n", cpu, record->data_linear_address); */
+/* } */
 
 static int enable_monitoring_pebs(void)
 {
-    int ret;
+    /* int ret; */
 
-    ret = pebs_acquire();
-    if ( ret )
-        return ret;
+    /* ret = pebs_acquire(); */
+    /* if ( ret ) */
+    /*     return ret; */
 
-    pebs_setevent(PEBS_MUOPS | PEBS_MUOPS_ALLLD);
-    pebs_setrate(0x10000);
-    pebs_sethandler(pebs_nmi_handler);
-    pebs_enable();
-
-    return 0;
+    /* pebs_setevent(PEBS_MUOPS | PEBS_MUOPS_ALLLD); */
+    /* pebs_setrate(0x10000); */
+    /* pebs_sethandler(pebs_nmi_handler); */
+    /* pebs_enable(); */
+    printk("PEBS useless in virtualization context !\n");
+    return -1;
 }
 
 static void disable_monitoring_pebs(void)
 {
-    pebs_disable();
-    pebs_release();
+    /* pebs_disable(); */
+    /* pebs_release(); */
 }
 
 

@@ -1198,7 +1198,6 @@ static void schedule(void)
     next_slice = sched->do_schedule(sched, now, tasklet_work_scheduled);
 
     next = next_slice.task;
-
     sd->curr = next;
 
     if ( next_slice.time >= 0 ) /* -ve means no limit */

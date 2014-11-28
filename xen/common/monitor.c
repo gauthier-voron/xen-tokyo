@@ -1,3 +1,4 @@
+#include <asm/guest_access.h>
 #include <asm/ibs.h>
 #include <asm/page.h>
 #include <asm/paging.h>
@@ -11,11 +12,12 @@
 
 struct hotpage
 {
-    struct hotpage  *next;
-    struct hotpage  *prev;
-    unsigned long    gfn;
-    struct vcpu     *vcpu;
-    unsigned long    score;
+    struct hotpage  *next;     /* next hotpage (colder except for the last) */
+    struct hotpage  *prev;     /* prev hotpage (hotter except for the first) */
+    unsigned long    gfn;      /* guest frame number */
+    unsigned long    mfn;      /* machine frame number */
+    struct vcpu     *vcpu;     /* vcpu which has been sampled */
+    unsigned long    score;    /* hot score (highter is hotter) */
 };
 
 static DEFINE_PER_CPU(struct hotpage, hotlist[BIGOS_HOTLIST_SIZE]);
@@ -38,6 +40,7 @@ static void init_hotlists(void)
             list[i].next  = &list[i+1];
             list[i].prev  = &list[i-1];
             list[i].gfn   = INVALID_GFN;
+            list[i].mfn   = INVALID_MFN;
             list[i].vcpu  = NULL;
             list[i].score = 0;
         }
@@ -49,7 +52,7 @@ static void init_hotlists(void)
     }
 }
 
-static void print_hotlist(int cpu)
+void print_hotlist(int cpu)
 {
     unsigned long i;
     struct hotpage *cur = per_cpu(hotlist_head, cpu);
@@ -94,10 +97,10 @@ static void move_hotpage(struct hotpage *page, struct hotpage *where)
     where->prev = page;
 }
 
-static void incr_hotpage(int cpu, struct hotpage *page, unsigned long score)
+static void incr_hotpage(struct hotpage *page, unsigned long score)
 {
     struct hotpage *cur = page->prev;
-    struct hotpage *head = per_cpu(hotlist_head, cpu);
+    struct hotpage *head = this_cpu(hotlist_head);
 
     page->score += score;
     if ( page->score > BIGOS_HOTPAGE_CEIL )
@@ -109,7 +112,7 @@ static void incr_hotpage(int cpu, struct hotpage *page, unsigned long score)
     if ( cur == head && head->score <= page->score )
     {
         move_hotpage(page, head);
-        per_cpu(hotlist_head, cpu) = page;
+        this_cpu(hotlist_head) = page;
     }
     else
     {
@@ -117,10 +120,11 @@ static void incr_hotpage(int cpu, struct hotpage *page, unsigned long score)
     }
 }
 
-static void register_access(int cpu, unsigned long gfn, struct vcpu *vcpu)
+static void register_access(unsigned long gfn, unsigned long mfn,
+                            struct vcpu *vcpu)
 {
-    struct hotpage *start = per_cpu(hotlist_head, cpu);
-    struct hotpage *end = per_cpu(hotlist_tail, cpu);
+    struct hotpage *start = this_cpu(hotlist_head);
+    struct hotpage *end = this_cpu(hotlist_tail);
     struct hotpage *own = NULL;
     struct hotpage *cur = start;
 
@@ -130,7 +134,7 @@ static void register_access(int cpu, unsigned long gfn, struct vcpu *vcpu)
         else
             cur->score -= BIGOS_HOTPAGE_DECR;
 
-        if ( cur->gfn == gfn )
+        if ( cur->gfn == gfn && cur->vcpu->domain == vcpu->domain )
             own = cur;
 
         cur = cur->next;
@@ -139,21 +143,23 @@ static void register_access(int cpu, unsigned long gfn, struct vcpu *vcpu)
     if ( own == NULL )
     {
         own = end;
-        per_cpu(hotlist_tail, cpu) = own->prev;
+        this_cpu(hotlist_tail) = own->prev;
 
         own->gfn = gfn;
         own->vcpu = vcpu;
         own->score = 0;
-        incr_hotpage(cpu, own, BIGOS_HOTPAGE_INIT);
+        incr_hotpage(own, BIGOS_HOTPAGE_INIT);
     }
     else if ( own->score == 0 )
     {
-        incr_hotpage(cpu, own, BIGOS_HOTPAGE_INIT);
+        incr_hotpage(own, BIGOS_HOTPAGE_INIT);
     }
     else
     {
-        incr_hotpage(cpu, own, BIGOS_HOTPAGE_INCR);
+        incr_hotpage(own, BIGOS_HOTPAGE_INCR);
     }
+
+    own->mfn = mfn;
 }
 
 
@@ -161,12 +167,29 @@ static s_time_t migrator_last_schedule = 0;
 
 static void migrator_main(unsigned long arg __attribute__((unused)))
 {
-    void *mem = alloc_xenheap_page();
+    struct hotpage *head;
+    struct hotpage *cur;
+    unsigned long node;
+    int cpu;
 
-    printk("@time = %lu\n", NOW());
-    print_hotlist(0);
+    for_each_online_cpu(cpu)
+    {
+        head = per_cpu(hotlist_head, cpu);
+        cur = head;
 
-    free_xenheap_page(mem);
+        do {
+            if ( cur->vcpu == NULL )
+                break;
+
+            node = phys_to_nid(cur->mfn << PAGE_SHIFT);
+            printk("node=%lu gfn=0x%lx score=%lu\n",
+                   node, cur->gfn, cur->score);
+
+            cur = cur->next;
+        } while ( cur != head );
+    }
+
+    migrator_last_schedule = NOW();
 }
 
 static DECLARE_TASKLET(migrator, migrator_main, 0);
@@ -175,12 +198,15 @@ static void schedule_migrator(void)
 {
     s_time_t now = NOW();
 
-    now -= BIGOS_MIGRATOR_SLEEPMS * 1000000;
+    if ( smp_processor_id() != 0 )
+        return;
+
+    now -= BIGOS_MIGRATOR_SLEEPMS * 1000000ul;
     if ( now < migrator_last_schedule )
         return;
 
     tasklet_schedule(&migrator);
-    migrator_last_schedule = NOW();
+    migrator_last_schedule = (s_time_t) -1;
 }
 
 
@@ -212,15 +238,37 @@ static void disable_monitoring_pebs(void)
 }
 
 
-static void ibs_nmi_handler(struct ibs_record *record, int cpu)
+static void ibs_nmi_handler(struct ibs_record *record)
 {
+    unsigned long gfn;
+    uint32_t pfec;
+
     if ( !(record->record_mode & IBS_RECORD_MODE_OP) )
         return;
     if ( !(record->record_mode & IBS_RECORD_MODE_DPA) )
         return;
     if ( current->domain->domain_id >= DOMID_FIRST_RESERVED )
         return;
-    register_access(cpu, record->data_physical_address >> PAGE_SHIFT, current);
+    if ( current->domain->guest_type != guest_type_hvm )
+        return;
+
+    /*
+     * FIXME: possible deadlock
+     * If the interrupt occurs when we are already locking the p2m, the
+     * interrupt handler will wait forever a lock which can be released only
+     * if it stops waiting.
+     * Possible fix: perform a trylock() on the p2m lock and abort the sample
+     * if already locked.
+     */
+    local_irq_enable();
+    pfec = PFEC_page_present;
+    gfn = paging_gva_to_gfn(current, record->data_linear_address, &pfec);
+    local_irq_disable();
+
+    if (gfn == INVALID_MFN)
+        return;
+
+    register_access(gfn, record->data_physical_address >> PAGE_SHIFT, current);
     schedule_migrator();
 }
 

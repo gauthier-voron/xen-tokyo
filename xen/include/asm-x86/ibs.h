@@ -96,11 +96,11 @@ struct ibs_record
 
 /*
  * The nmi handler called by the do_nmi() function of arch/x86/traps.c
- * Dispatch the NMI interrupt that occured in the specified cpu to the
+ * Dispatch the NMI interrupt that occured on the current cpu to the
  * appropriate handler.
  * Return 1 if the NMI was an IBS-related NMI, 0 otherwise.
  */
-int nmi_ibs(int cpu);
+int nmi_ibs(void);
 
 
 /*
@@ -147,7 +147,7 @@ int ibs_setrate(unsigned long rate);
  * The handler is called in an NMI context.
  * Return 0 in case of success.
  */
-int ibs_sethandler(void (*handler)(struct ibs_record *record, int cpu));
+int ibs_sethandler(void (*handler)(struct ibs_record *record));
 
 
 /*

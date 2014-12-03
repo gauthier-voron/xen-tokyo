@@ -480,7 +480,6 @@ static void disable_monitoring_pebs(void)
     /* pebs_release(); */
 }
 
-
 static void ibs_nmi_handler(struct ibs_record *record)
 {
     unsigned long gfn;
@@ -495,17 +494,9 @@ static void ibs_nmi_handler(struct ibs_record *record)
     if ( current->domain->guest_type != guest_type_hvm )
         return;
 
-    /*
-     * FIXME: possible deadlock
-     * If the interrupt occurs when we are already locking the p2m, the
-     * interrupt handler will wait forever a lock which can be released only
-     * if it stops waiting.
-     * Possible fix: perform a trylock() on the p2m lock and abort the sample
-     * if already locked.
-     */
     local_irq_enable();
     pfec = PFEC_page_present;
-    gfn = paging_gva_to_gfn(current, record->data_linear_address, &pfec);
+    gfn = try_paging_gva_to_gfn(current, record->data_linear_address, &pfec);
     local_irq_disable();
 
     if (gfn == INVALID_MFN)

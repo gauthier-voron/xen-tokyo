@@ -255,6 +255,18 @@ unsigned long paging_gva_to_gfn(struct vcpu *v,
                                 unsigned long va,
                                 uint32_t *pfec);
 
+/*
+ * Does the same thing than paging_gva_to_gfn(), but try to read lock the p2m
+ * of the domain of "v". This function is inteded to be used in an interrupt
+ * handler. Indeed, if the lock is acquired by the try_lock, it is then
+ * released before to be acquired again later, making this function non
+ * preemt-safe.
+ * If it fail to lock, return INVALID_GFN.
+ */
+unsigned long try_paging_gva_to_gfn(struct vcpu *v,
+                                    unsigned long va,
+                                    uint32_t *pfec);
+
 /* Translate a guest address using a particular CR3 value.  This is used
  * to by nested HAP code, to walk the guest-supplied NPT tables as if
  * they were pagetables.

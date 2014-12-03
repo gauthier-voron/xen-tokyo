@@ -123,7 +123,7 @@
 #define BIGOS_HOTPAGE_CEIL              4096
 
 #define BIGOS_MIGRATOR_SLEEPMS          35
-#define BIGOS_MIGRATOR_MAXMOVE          1
+#define BIGOS_MIGRATOR_MAXMOVE          16
 #define BIGOS_MIGRATOR_LOCRATE          90
 #define BIGOS_MIGRATOR_LCSCORE          256
 

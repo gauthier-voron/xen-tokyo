@@ -143,6 +143,12 @@ static inline void _mm_read_lock(mm_rwlock_t *l, int level)
      * set the lock level. */
 }
 
+static inline int _mm_read_trylock(mm_rwlock_t *l, int level)
+{
+    __check_lock_level(level);
+    return read_trylock(&l->lock);
+}
+
 static inline void mm_read_unlock(mm_rwlock_t *l)
 {
     read_unlock(&l->lock);
@@ -156,12 +162,15 @@ static inline void mm_read_unlock(mm_rwlock_t *l)
     static inline void mm_write_lock_##name(mm_rwlock_t *l, const char *func) \
     { _mm_write_lock(l, func, __LINE__); }                                    \
     static inline void mm_read_lock_##name(mm_rwlock_t *l)                    \
-    { _mm_read_lock(l, __LINE__); }
+    { _mm_read_lock(l, __LINE__); }					      \
+    static inline int mm_read_trylock_##name(mm_rwlock_t *l)                  \
+    { return _mm_read_trylock(l, __LINE__); }
 /* These capture the name of the calling function */
 #define mm_lock(name, l) mm_lock_##name(l, __func__, 0)
 #define mm_lock_recursive(name, l) mm_lock_##name(l, __func__, 1)
 #define mm_write_lock(name, l) mm_write_lock_##name(l, __func__)
 #define mm_read_lock(name, l) mm_read_lock_##name(l)
+#define mm_read_trylock(name, l) mm_read_trylock_##name(l)
 
 /* This wrapper is intended for "external" locks which do not use
  * the mm_lock_t types. Such locks inside the mm code are also subject
@@ -225,6 +234,7 @@ declare_mm_rwlock(p2m);
 #define gfn_lock(p,g,o)       p2m_lock(p)
 #define gfn_unlock(p,g,o)     p2m_unlock(p)
 #define p2m_read_lock(p)      mm_read_lock(p2m, &(p)->lock)
+#define p2m_read_trylock(p)   mm_read_trylock(p2m, &(p)->lock)
 #define p2m_read_unlock(p)    mm_read_unlock(&(p)->lock)
 #define p2m_locked_by_me(p)   mm_write_locked_by_me(&(p)->lock)
 #define gfn_locked_by_me(p,g) p2m_locked_by_me(p)

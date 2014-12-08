@@ -1101,8 +1101,6 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
 {
     unsigned long old_mfn = page_to_mfn(old), new_mfn = page_to_mfn(new);
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
-    p2m_type_t t;
-    p2m_access_t a;
     int drop;
 
     ASSERT(gfn == mfn_to_gmfn(d, old_mfn));
@@ -1129,10 +1127,13 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     /*
      * First step, remove the write access on the old mfn, and flush the TLBs
      * for the appropriate entry.
+     * NB: be carefull, the "p2m_access_rx" can be changed to the p2m default
+     *     access type (p2m_access_rwx) for random reasons.
+     *     We use p2m_ram_ro which is a type indicated to silently drop writes
+     *     on the page, and intercept them in page fault handler.
      */
 
-    p2m->get_entry(p2m, gfn, &t, &a, 0, NULL);
-    p2m->set_entry(p2m, gfn, _mfn(old_mfn), 0, t, p2m_access_rx);
+    p2m->set_entry(p2m, gfn, _mfn(old_mfn), 0, p2m_ram_ro, p2m_access_rx);
     flush_tlb_one_all(gfn);
 
     /*

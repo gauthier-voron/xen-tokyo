@@ -69,6 +69,113 @@ static unsigned int     migrator_lcrate = BIGOS_MIGRATOR_DEFAULT_LCRATE;
 static unsigned int     migrator_lcscore = BIGOS_MIGRATOR_DEFAULT_LCSCORE;
 
 
+#ifdef BIGOS_STATS
+
+static s_time_t         stats_start = 0;
+static s_time_t         stats_end = 0;
+
+static s_time_t         time_counter_0;
+static s_time_t         time_counter_1;
+static s_time_t         time_counter_2;
+
+static s_time_t         sampling_total_time = 0;       /* IBS/PEBS total ns */
+static s_time_t         sampling_accounting_time = 0;  /* hotlist stuffs ns */
+static s_time_t         sampling_probing_time = 0;     /* info gathering ns */
+static s_time_t         decision_total_time = 0;       /* planning time  ns */
+static s_time_t         migration_total_time = 0;      /* migration time ns */
+
+static unsigned long    migration_planned = 0;     /* # page in info_buffer */
+static unsigned long    migration_tries = 0;       /* # memory_move call */
+static unsigned long    migration_succeed = 0;     /* # memory_move return 0 */
+
+static void reset_stats(void)
+{
+    sampling_total_time = 0;
+    sampling_accounting_time = 0;
+    sampling_probing_time = 0;
+    decision_total_time = 0;
+    migration_total_time = 0;
+    migration_planned = 0;
+    migration_tries = 0;
+    migration_succeed = 0;
+    stats_start = 0;
+    stats_end = 0;
+}
+
+#define stats_start()        stats_start = NOW()
+#define stats_end()          stats_end = NOW()
+
+#define stats_start_sampling()     time_counter_0 = NOW()
+#define stats_stop_sampling()                       \
+    sampling_total_time += (NOW() - time_counter_0)
+
+#define stats_start_accounting()   time_counter_1 = NOW()
+#define stats_stop_accounting()                         \
+    sampling_accounting_time += (NOW()-time_counter_1)
+
+#define stats_start_probing()      time_counter_1 = NOW()
+#define stats_stop_probing()                            \
+    sampling_probing_time += (NOW() - time_counter_1)
+
+#define stats_start_decision()     time_counter_2 = NOW()
+#define stats_stop_decision()                       \
+    decision_total_time += (NOW() - time_counter_2)
+
+#define stats_start_migration()    time_counter_2 = NOW()
+#define stats_stop_migration()                          \
+    migration_total_time += (NOW() - time_counter_2)
+
+
+#define stats_account_migration_plan()          \
+    migration_planned++
+
+#define stats_account_migration_try(ret)            \
+    migration_tries++, migration_succeed += (!(ret))
+
+
+static void display_stats(void)
+{
+    printk("   ***   BIGOS STATISTICS   ***   \n");
+    printk("statistics over %lu nanoseconds\n", stats_end - stats_start);
+    printk("\n");
+    printk("sampling total time          %luns\n", sampling_total_time);
+    printk("sampling accounting time     %luns\n", sampling_accounting_time);
+    printk("sampling probing time        %luns\n", sampling_probing_time);
+    printk("\n");
+    printk("decision total time          %luns\n", decision_total_time);
+    printk("\n");
+    printk("migration total time         %luns\n", migration_total_time);
+    printk("migration planned            %lu\n", migration_planned);
+    printk("migration tries              %lu\n", migration_tries);
+    printk("migration succeed            %lu\n", migration_succeed);
+    printk("\n");
+    printk("total overhead               %lu%%\n",
+           ((sampling_total_time + decision_total_time + migration_total_time)
+            * 100) / (stats_end - stats_start + 1));
+}
+
+#else
+
+#define reset_stats()                      {}
+#define sstats_tart()                      {}
+#define stats_end()                        {}
+#define stats_start_sampling()             {}
+#define stats_stop_sampling()              {}
+#define stats_start_accounting()           {}
+#define stats_stop_accounting()            {}
+#define stats_start_probing()              {}
+#define stats_stop_probing()               {}
+#define stats_start_decision()             {}
+#define stats_stop_probing()               {}
+#define stats_start_migration()            {}
+#define stats_stop_migration()             {}
+#define stats_account_migration_plan()     {}
+#define stats_account_migration_try(ret)   {}
+#define display_stats()                    {}
+
+#endif
+
+
 static int cmphotpages(struct hotpage *a, struct hotpage *b)
 {
     if ( a->mfn != b->mfn )
@@ -489,26 +596,29 @@ static void init_info_buffer(void)
 }
 
 
-static void compute_scores(struct hotpage_info *dest, unsigned int *scores,
+static void compute_scores(struct hotpage_info *dest,
+                           unsigned int *scores_per_node,
+                           unsigned int *best_local_scores,
                            unsigned long size)
 {
     unsigned long i;
     unsigned int total = 0;
 
     dest->node = 0;
+
     for (i=0; i<size; i++)
-        if ( scores[i] > scores[dest->node] )
+    {
+        total += scores_per_node[i];
+        if ( scores_per_node[i] > scores_per_node[dest->node] )
             dest->node = i;
-
-    for (i=0; i<size; i++)
-        total += scores[i];
-
-    dest->lcscore = scores[dest->node];
+    }
 
     if ( total != 0 )
-        dest->lcrate = (scores[dest->node] * 100) / total;
+        dest->lcrate = (scores_per_node[dest->node] * 100) / total;
     else
         dest->lcrate = 0;
+
+    dest->lcscore = best_local_scores[dest->node];
 }
 
 static void prepare_hotpage(struct hotpage_info *new)
@@ -524,12 +634,14 @@ static void prepare_hotpage(struct hotpage_info *new)
         return;
 
     info_buffer[slot_min_lcrate] = *new;
+    stats_account_migration_plan();
 }
 
 static void fill_info_buffer(void)
 {
     static struct hotlist_heap heap;
-    static unsigned int score_per_node[NR_CPUS];      /* NR_CPUS >= NR_NODES */
+    static unsigned int scores_per_node[NR_CPUS];     /* NR_CPUS >= NR_NODES */
+    static unsigned int best_local_scores[NR_CPUS];   /* NR_CPUS >= NR_NODES */
     struct hotpage_info new;
     struct hotpage *page;
     int cpu, node;
@@ -538,20 +650,26 @@ static void fill_info_buffer(void)
 
     new.mfn = INVALID_MFN;
     for_each_online_cpu ( node )
-        score_per_node[node] = 0;
+    {
+        scores_per_node[node] = 0;
+        best_local_scores[node] = 0;
+    }
 
     while ( (page = pop_hotlist_heap(&heap)) != NULL )
     {
         if ( page->mfn != new.mfn )
         {
-            compute_scores(&new, score_per_node, NR_CPUS);
+            compute_scores(&new, scores_per_node, best_local_scores, NR_CPUS);
 
             if ( new.lcscore >= migrator_lcscore
                  && new.lcrate >= migrator_lcrate )
                 prepare_hotpage(&new);
 
             for_each_online_cpu ( node )
-                score_per_node[node] = 0;
+            {
+                scores_per_node[node] = 0;
+                best_local_scores[node] = 0;
+            }
             new.mfn = page->mfn;
             new.gfn = page->gfn; /* no */
             new.domain = page->vcpu->domain; /* no */
@@ -559,24 +677,26 @@ static void fill_info_buffer(void)
 
         cpu  = page->vcpu->processor;
         node = cpu_to_node(cpu);
-        score_per_node[node] += page->score + per_cpu(hotlist, cpu).score;
+
+        scores_per_node[node] += page->score + per_cpu(hotlist, cpu).score;
+        if ( page->score > best_local_scores[node] )
+            best_local_scores[node] = page->score;
     }
 }
 
-static unsigned long moved = 0;
 static void flush_info_buffer(void)
 {
     unsigned long i;
+    int ret;
 
     for (i=0; i<migrator_size; i++)
         if ( info_buffer[i].domain && info_buffer[i].gfn != INVALID_GFN )
         {
-            memory_move(info_buffer[i].domain, info_buffer[i].gfn,
-                        info_buffer[i].node);
+            ret = memory_move(info_buffer[i].domain, info_buffer[i].gfn,
+                              info_buffer[i].node);
+            stats_account_migration_try(ret);
 
-            moved++;
             forget_page(info_buffer[i].mfn);
-
             reset_info_buffer_slot(i);
         }
 }
@@ -587,8 +707,14 @@ static void migrator_main(unsigned long arg __attribute__((unused)))
         return;
 
     rebase_hotlist_scores();
+
+    stats_start_decision();
     fill_info_buffer();
+    stats_stop_decision();
+
+    stats_start_migration();
     flush_info_buffer();
+    stats_stop_migration();
 
     migrator_last_schedule = NOW();
 }
@@ -643,6 +769,8 @@ static void ibs_nmi_handler(struct ibs_record *record)
     unsigned long gfn;
     uint32_t pfec;
 
+    stats_start_sampling();
+
     if ( !(record->record_mode & IBS_RECORD_MODE_OP) )
         return;
     if ( !(record->record_mode & IBS_RECORD_MODE_DPA) )
@@ -654,14 +782,24 @@ static void ibs_nmi_handler(struct ibs_record *record)
 
     local_irq_enable();
     pfec = PFEC_page_present;
+
+    stats_start_probing();
     gfn = try_paging_gva_to_gfn(current, record->data_linear_address, &pfec);
+    stats_stop_probing();
+
     local_irq_disable();
+
 
     if (gfn == INVALID_MFN)
         return;
 
+    stats_start_accounting();
     touch_page(gfn, record->data_physical_address >> PAGE_SHIFT, current);
+    stats_stop_accounting();
+
     schedule_migrator();
+
+    stats_stop_sampling();
 }
 
 static int enable_monitoring_ibs(void)
@@ -735,7 +873,9 @@ int start_monitoring(void)
 {
     if ( monitoring_started )
         return -1;
-    
+
+    reset_stats();
+
     if ( alloc_info_buffer() != 0 )
         goto err;
     if ( alloc_hotlist() != 0 )
@@ -752,6 +892,7 @@ int start_monitoring(void)
 
 out:
     monitoring_started = 1;
+    stats_start();
     return 0;
 err_hlst:
     printk("Cannot find monitoring facility\n");
@@ -766,6 +907,7 @@ void stop_monitoring(void)
 {
     if ( !monitoring_started )
         return;
+    stats_end();
     
     if ( ibs_capable() )
         disable_monitoring_ibs();
@@ -775,10 +917,9 @@ void stop_monitoring(void)
     free_hotlist();
     free_info_buffer();
 
-    printk("moved = %lu\n", moved);
-    moved = 0;
-
     monitoring_started = 0;
+
+    display_stats();
 }
 
  /*

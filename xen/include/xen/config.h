@@ -116,15 +116,15 @@
 #define BIGOS_PERF_COUNTING
 
 /* Count of hot page per pcpu (consume 8 bytes per page) */
-#define BIGOS_HOTLIST_SIZE              128
-#define BIGOS_HOTPAGE_INIT              128
-#define BIGOS_HOTPAGE_INCR              16
-#define BIGOS_HOTPAGE_DECR              1
-#define BIGOS_HOTPAGE_CEIL              4096
+#define BIGOS_HOTLIST_DEFAULT_SIZE              128
+#define BIGOS_HOTLIST_DEFAULT_SCORE_ENTER       128
+#define BIGOS_HOTLIST_DEFAULT_SCORE_INCR        16
+#define BIGOS_HOTLIST_DEFAULT_SCORE_DECR        1
+#define BIGOS_HOTLIST_DEFAULT_SCORE_MAX         4096
 
-#define BIGOS_MIGRATOR_SLEEPMS          35
-#define BIGOS_MIGRATOR_MAXMOVE          16
-#define BIGOS_MIGRATOR_LOCRATE          90
-#define BIGOS_MIGRATOR_LCSCORE          256
+#define BIGOS_MIGRATOR_DEFAULT_COOLDOWN         35
+#define BIGOS_MIGRATOR_DEFAULT_SIZE             4
+#define BIGOS_MIGRATOR_DEFAULT_LCRATE           90
+#define BIGOS_MIGRATOR_DEFAULT_LCSCORE          2048
 
 #endif /* __XEN_CONFIG_H__ */

@@ -6,9 +6,12 @@
 #include <xen/cpumask.h>
 #include <xen/config.h>
 #include <xen/lib.h>
+#include <xen/monitor.h>
 #include <xen/percpu.h>
 #include <xen/tasklet.h>
 
+
+static int monitoring_started = 0;            /* is the monitoring running ? */
 
 struct hotpage
 {
@@ -16,32 +19,54 @@ struct hotpage
     unsigned long    mfn;      /* machine frame number */
     struct vcpu     *vcpu;     /* vcpu which has been sampled */
     unsigned long    score;    /* hot score (highter is hotter) */
-    struct hotpage  *next;     /* next hotpage (colder except for the last) */
-    struct hotpage  *prev;     /* prev hotpage (hotter except for the first) */
-    struct hotpage  *anext;    /* next sort hotpage (gfn < anext->gfn) */
-    struct hotpage  *aprev;    /* prev sort hotpage (gfn > aprev->gfn) */
+    struct hotpage  *score_next;
+    struct hotpage  *score_prev;
+    struct hotpage  *pgid_next;    /* next sort hotpage (gfn < anext->gfn) */
+    struct hotpage  *pgid_prev;    /* prev sort hotpage (gfn > aprev->gfn) */
 };
 
-static DEFINE_PER_CPU(struct hotpage, hotlist[BIGOS_HOTLIST_SIZE]);
-static DEFINE_PER_CPU(struct hotpage *, hotlist_head);
-static DEFINE_PER_CPU(struct hotpage *, hotlist_tail);
-static DEFINE_PER_CPU(struct hotpage *, hotlist_sort);
-static DEFINE_PER_CPU(unsigned long, cpuscore);
+struct hotlist
+{
+    struct hotpage  *pool;         /* memory pool of hotpages */
+    struct hotpage  *score_head;   /* hotpage with maximum score */
+    struct hotpage  *pgid_head;    /* hotpage with minimum pgid */
+    unsigned int     score;        /* hotlist cpu local score */
+};
+
+static DEFINE_PER_CPU(struct hotlist, hotlist);
+
+static unsigned long hotlist_size = BIGOS_HOTLIST_DEFAULT_SIZE;
+static unsigned int  hotlist_score_enter = BIGOS_HOTLIST_DEFAULT_SCORE_ENTER;
+static unsigned int  hotlist_score_incr = BIGOS_HOTLIST_DEFAULT_SCORE_INCR;
+static unsigned int  hotlist_score_decr = BIGOS_HOTLIST_DEFAULT_SCORE_DECR;
+static unsigned int  hotlist_score_max = BIGOS_HOTLIST_DEFAULT_SCORE_MAX;
 
 
 #define MIGRATOR_IS_SCHEDULED    ((s_time_t) -1)
 static s_time_t migrator_last_schedule = 0;
 
-
-struct distpage
+struct hotlist_heap
 {
-    unsigned long     gfn;     /* guest physical frame number of the page */
-    unsigned long     mfn;     /* machine frame number of the page */
-    struct domain    *domain;  /* domain the page belongs to */
-    int               major;   /* id of the node using the page the most */
-    unsigned long     local;   /* score of the major node on the page */
-    unsigned long     distant; /* sum score of the non major nodes */
+    struct hotpage  *arr[NR_CPUS];   /* the array of hotlist, 1 hotpage/list */
+    size_t           size;           /* the size of the heap */
 };
+
+struct hotpage_info
+{
+    unsigned long    mfn;      /* mfn of the page to move */
+    unsigned int     node;     /* destination node for move */
+    unsigned int     lcrate;   /* destination node access rate */
+    unsigned int     lcscore;  /* destination node local scores sum */
+    unsigned long    gfn;      /* gfn of the page to move */
+    struct domain   *domain;   /* domain in which the gfn is valid */
+};
+
+static struct hotpage_info  *info_buffer;
+
+static unsigned long    migrator_cooldown = BIGOS_MIGRATOR_DEFAULT_COOLDOWN;
+static unsigned long    migrator_size = BIGOS_MIGRATOR_DEFAULT_SIZE;
+static unsigned int     migrator_lcrate = BIGOS_MIGRATOR_DEFAULT_LCRATE;
+static unsigned int     migrator_lcscore = BIGOS_MIGRATOR_DEFAULT_LCSCORE;
 
 
 static int cmphotpages(struct hotpage *a, struct hotpage *b)
@@ -51,51 +76,112 @@ static int cmphotpages(struct hotpage *a, struct hotpage *b)
     return 0;
 }
 
+/*
+ * Free the hotlists pool of hotpages for each online cpu.
+ * Hotlist cannot be used after this function has been called.
+ */
+static void free_hotlist(void)
+{
+    int cpu;
+    unsigned long size = hotlist_size;
+    unsigned int order = PAGE_ORDER_4K;
+    struct hotlist *list;
 
-static void init_hotlists(void)
+    while ( (1ul << (PAGE_SHIFT + order)) < (size * sizeof(struct hotpage)) )
+        order++;
+
+    for_each_online_cpu ( cpu )
+    {
+        list = &per_cpu(hotlist, cpu);
+        if ( list->pool != NULL )
+        {
+            free_xenheap_pages(list->pool, order);
+            list->pool = NULL;
+        }
+    }
+}
+
+/*
+ * Alloc the hotlists pool of hotpages for each online cpus.
+ * The function init_hotlist() should be called before any attempt to use the
+ * hotlists.
+ * Return 0 in case of success.
+ */
+static int alloc_hotlist(void)
+{
+    int cpu;
+    unsigned long size = hotlist_size;
+    unsigned int order = PAGE_ORDER_4K;
+    struct hotlist *list;
+
+    while ( (1ul << (PAGE_SHIFT + order)) < (size * sizeof(struct hotpage)) )
+        order++;
+
+    for_each_online_cpu ( cpu )
+    {
+        list = &per_cpu(hotlist, cpu);
+        list->pool = alloc_xenheap_pages(order, 0);
+        if ( list->pool == NULL )
+            goto err;
+    }
+
+    return 0;
+err:
+    free_hotlist();
+    return -1;
+}
+
+/*
+ * Initialize the hotlists for each online cpus.
+ * The hotlists must be allocated before to be initialized.
+ * Hotlists are empty and ready to be used after this function returns.
+ */
+static void init_hotlist(void)
 {
     int cpu;
     unsigned long i;
-    struct hotpage *list;
+    struct hotlist *list;
+    struct hotpage *pool;
 
     for_each_online_cpu(cpu)
     {
-        list = per_cpu(hotlist, cpu);
+        list = &per_cpu(hotlist, cpu);
+        pool = list->pool;
 
-        for (i=0; i<BIGOS_HOTLIST_SIZE; i++)
+        for (i=0; i<hotlist_size; i++)
         {
-            list[i].next  = &list[i+1];
-            list[i].prev  = &list[i-1];
-            list[i].gfn   = INVALID_GFN;
-            list[i].mfn   = INVALID_MFN;
-            list[i].vcpu  = NULL;
-            list[i].score = 0;
-            list[i].anext = &list[i+1];
-            list[i].aprev = &list[i-1];
+            pool[i].score_next  = &pool[i+1];
+            pool[i].score_prev  = &pool[i-1];
+            pool[i].gfn   = INVALID_GFN;
+            pool[i].mfn   = INVALID_MFN;
+            pool[i].vcpu  = NULL;
+            pool[i].score = 0;
+            pool[i].pgid_next = &pool[i+1];
+            pool[i].pgid_prev = &pool[i-1];
         }
 
-        list[i-1].next  = &list[0];
-        list[i-1].anext = &list[0];
-        list[0].prev  = &list[i-1];
-        list[0].aprev = &list[i-1];
+        pool[i-1].score_next  = &pool[0];
+        pool[i-1].pgid_next = &pool[0];
+        pool[0].score_prev  = &pool[i-1];
+        pool[0].pgid_prev = &pool[i-1];
 
-        per_cpu(hotlist_head, cpu) = &list[0];
-        per_cpu(hotlist_tail, cpu) = &list[i-1];
-        per_cpu(hotlist_sort, cpu) = &list[0];
+        list->score_head = &pool[0];
+        list->pgid_head = &pool[0];
+        list->score = 0;
     }
 }
 
 void print_hotlist(int cpu)
 {
     unsigned long i;
-    struct hotpage *cur = per_cpu(hotlist_head, cpu);
-    struct hotpage *lst = per_cpu(hotlist, cpu);
+    struct hotpage *cur = per_cpu(hotlist, cpu).score_head;
+    struct hotpage *lst = per_cpu(hotlist, cpu).pool;
 
     printk("===\n");
 
-    for (i=0; i<BIGOS_HOTLIST_SIZE; i++)
+    for (i=0; i<hotlist_size; i++)
     {
-        if (cur < lst || cur > &lst[BIGOS_HOTLIST_SIZE - 1])
+        if (cur < lst || cur > &lst[hotlist_size - 1])
         {
             printk("invalid address (0x%lx)\n", (unsigned long) cur);
             return;
@@ -109,93 +195,116 @@ void print_hotlist(int cpu)
             printk("list[%3lu] (d_v_@%-10lx = %lu)\n",
                    (cur - lst), cur->mfn, cur->score);
 
-        cur = cur->next;
+        cur = cur->score_next;
     }
 
     printk("===\n");
 }
 
-static void move_hotpage(struct hotpage *page, struct hotpage *where)
+static void hotlist_score_move(struct hotpage *page, struct hotpage *where)
 {
     if ( unlikely(page == where) )
         return;
 
-    page->prev->next = page->next;
-    page->next->prev = page->prev;
+    page->score_prev->score_next = page->score_next;
+    page->score_next->score_prev = page->score_prev;
 
-    page->next = where;
-    page->prev = where->prev;
+    page->score_next = where;
+    page->score_prev = where->score_prev;
 
-    where->prev->next = page;
-    where->prev = page;
+    where->score_prev->score_next = page;
+    where->score_prev = page;
 }
 
-static void move_sort_hotpage(struct hotpage *page, struct hotpage *where)
+static void hotlist_score_update(struct hotpage *page)
 {
-    if ( unlikely(page == where) )
-        return;
+    struct hotpage *cur = page->score_prev;
+    struct hotpage *head = this_cpu(hotlist).score_head;
 
-    page->aprev->anext = page->anext;
-    page->anext->aprev = page->aprev;
-
-    page->anext = where;
-    page->aprev = where->aprev;
-
-    where->aprev->anext = page;
-    where->aprev = page;
-}
-
-static void incr_hotpage(struct hotpage *page, unsigned long score)
-{
-    struct hotpage *cur = page->prev;
-    struct hotpage *head = this_cpu(hotlist_head);
-
-    page->score += score;
-    if ( page->score > BIGOS_HOTPAGE_CEIL )
-        page->score = BIGOS_HOTPAGE_CEIL;
+    if ( page->score > hotlist_score_max )
+        page->score = hotlist_score_max;
 
     while ( cur->score <= page->score && cur != head )
-        cur = cur->prev;
+        cur = cur->score_prev;
 
     if ( cur == head && head->score <= page->score )
     {
-        move_hotpage(page, head);
-        this_cpu(hotlist_head) = page;
+        hotlist_score_move(page, head);
+        this_cpu(hotlist).score_head = page;
     }
     else
     {
-        move_hotpage(page, cur->next);
+        hotlist_score_move(page, cur->score_next);
     }
 }
 
-static void change_hotpage(struct hotpage *page, unsigned long gfn,
-                           unsigned long mfn, struct vcpu *vcpu)
+static void hotlist_pgid_move(struct hotpage *page, struct hotpage *where)
 {
-    struct hotpage *cur = page;
-    struct hotpage *sort = this_cpu(hotlist_sort);
+    if ( unlikely(page == where) )
+        return;
 
-    page->gfn = gfn;
-    page->mfn = mfn;
-    page->vcpu = vcpu;
+    page->pgid_prev->pgid_next = page->pgid_next;
+    page->pgid_next->pgid_prev = page->pgid_prev;
 
-    while ( cmphotpages(page, cur->aprev) < 0 && cur != sort )
-        cur = cur->aprev;
-    while ( cmphotpages(page, cur) >= 0 && cur != sort )
-        cur = cur->anext;
+    page->pgid_next = where;
+    page->pgid_prev = where->pgid_prev;
 
-    move_sort_hotpage(page, cur);
-
-    if ( cur == sort && cmphotpages(page, sort) < 0 )
-        this_cpu(hotlist_sort) = page;
+    where->pgid_prev->pgid_next = page;
+    where->pgid_prev = page;
 }
 
-static void register_access(unsigned long gfn, unsigned long mfn,
-                            struct vcpu *vcpu)
+static void hotlist_pgid_update(struct hotpage *page)
 {
-    struct hotpage *start = this_cpu(hotlist_head);
-    struct hotpage *end = this_cpu(hotlist_tail);
-    struct hotpage *own = NULL;
-    struct hotpage *cur = start;
+    struct hotpage *cur = page;
+    struct hotpage *sort = this_cpu(hotlist).pgid_head;
+
+    while ( cmphotpages(page, cur->pgid_prev) < 0 && cur != sort )
+        cur = cur->pgid_prev;
+    while ( cmphotpages(page, cur) >= 0 && cur != sort )
+        cur = cur->pgid_next;
+
+    hotlist_pgid_move(page, cur);
+
+    if ( cur == sort && cmphotpages(page, sort) < 0 )
+        this_cpu(hotlist).pgid_head = page;
+}
+
+static void forget_page(unsigned long mfn)
+{
+    int cpu;
+    struct hotpage *head, *page;
+
+    for_each_online_cpu ( cpu )
+    {
+        head = per_cpu(hotlist, cpu).pgid_head;
+        page = head;
+
+        do {
+            if ( page->mfn == mfn )
+            {
+                hotlist_pgid_move(page, per_cpu(hotlist, cpu).pgid_head);
+                hotlist_score_move(page, per_cpu(hotlist, cpu).score_head);
+
+                page->mfn = INVALID_MFN;
+                page->score = 0;
+
+                break;
+            }
+
+            if ( page->mfn > mfn )
+                break;
+
+            page = page->pgid_next;
+        } while (head != page);
+    }
+}
+
+static void touch_page(unsigned long gfn, unsigned long mfn,
+                       struct vcpu *vcpu)
+{
+    struct hotpage *head = this_cpu(hotlist).score_head;
+    struct hotpage *found = NULL;
+    struct hotpage *cur = head;
     struct hotpage  new;
 
     if ( migrator_last_schedule == MIGRATOR_IS_SCHEDULED )
@@ -206,231 +315,280 @@ static void register_access(unsigned long gfn, unsigned long mfn,
     new.vcpu = vcpu;
 
     do {
-        if ( cur->score < BIGOS_HOTPAGE_DECR )
+        if ( cur->score < hotlist_score_decr )
             cur->score = 0;
         else
-            cur->score -= BIGOS_HOTPAGE_DECR;
+            cur->score -= hotlist_score_decr;
 
         if ( !cmphotpages(&new, cur) )
-            own = cur;
+            found = cur;
 
-        cur = cur->next;
-    } while (cur != start);
+        cur = cur->score_next;
+    } while (cur != head);
 
-    if ( own == NULL )
+    if ( found == NULL )
     {
-        own = end;
-        this_cpu(hotlist_tail) = own->prev;
+        found = head->score_prev;
 
-        own->score = 0;
-        incr_hotpage(own, BIGOS_HOTPAGE_INIT);
-        change_hotpage(own, gfn, mfn, vcpu);
+        found->score = 0;
+        found->gfn = gfn;
+        found->mfn = mfn;
+        found->vcpu = vcpu;
+
+        hotlist_pgid_update(found);
     }
-    else if ( own->score == 0 )
-    {
-        incr_hotpage(own, BIGOS_HOTPAGE_INIT);
-    }
+    
+    if ( found->score == 0 )
+        found->score = hotlist_score_enter;
     else
-    {
-        incr_hotpage(own, BIGOS_HOTPAGE_INCR);
-    }
+        found->score += hotlist_score_incr;
+    hotlist_score_update(found);
 
-    this_cpu(cpuscore)++;
+    this_cpu(hotlist).score += hotlist_score_decr;
 ignore:
     return;
 }
 
 
 
-static void init_hotlist_heap(struct hotpage **heap, size_t *size)
+#define SWAP_HOTPAGES(a, b)                     \
+    {                                           \
+        struct hotpage *____swap = (a);         \
+        (a) = (b);                              \
+        (b) = ____swap;                         \
+    }
+
+static void init_hotlist_heap(struct hotlist_heap *heap)
 {
-    struct hotpage *swap;
+    struct hotpage **arr = heap->arr;
     size_t i, index = 0;
     int cpu;
 
-    /* make the heap start at index 1 */
-    heap--;
+    /* make the arr start at index 1 */
+    arr--;
     index++;
 
     for_each_online_cpu ( cpu )
     {
         i = index++;
-        heap[i] = per_cpu(hotlist_sort, cpu);
-        while ( i > 1 && cmphotpages(heap[i], heap[i/2]) < 0 )
+        arr[i] = per_cpu(hotlist, cpu).pgid_head;
+        while ( i > 1 && cmphotpages(arr[i], arr[i/2]) < 0 )
         {
-            swap = heap[i];
-            heap[i] = heap[i/2];
-            heap[i/2] = swap;
+            SWAP_HOTPAGES(arr[i], arr[i/2]);
             i /= 2;
         }
     }
 
-    *size = index - 1;
+    heap->size = index - 1;
 }
 
-static struct hotpage *pop_hotlist_heap(struct hotpage **heap, size_t *size)
+static void decrease_hotlist_heap(struct hotlist_heap *heap)
 {
-    struct hotpage *ret = heap[0];
-    struct hotpage *swap;
-    size_t i = 0;
+    struct hotpage **arr = heap->arr;
+    size_t i = 0, size = heap->size;
     int side;
 
-    heap[0] = heap[0]->anext;
-
-    if ( cmphotpages(ret, heap[0]) > 0 )
-    {
-        (*size)--;
-        swap = heap[0];
-        heap[0] = heap[*size];
-        heap[*size] = swap;
-    }
-
     /* make the heap start at index 1 */
-    heap--;
+    arr--;
     i++;
-    (*size)++;
+    size++;
 
-    while ( (i*2) < *size ) {
+    while ( (i*2) < size ) {
         side = 0;
-        if ( ((i*2+1) < *size) && (cmphotpages(heap[i*2+1], heap[i*2]) < 0) )
+        if ( ((i*2+1) < size) && (cmphotpages(arr[i*2+1], arr[i*2]) < 0) )
             side = 1;
 
-        if ( cmphotpages(heap[i], heap[i*2+side]) <= 0 )
+        if ( cmphotpages(arr[i], arr[i*2+side]) <= 0 )
             break;
 
-        swap = heap[i];
-        heap[i] = heap[i*2+side];
-        heap[i*2+side] = swap;
+        SWAP_HOTPAGES(arr[i], arr[i*2+side]);
         i = i * 2 + side;
     }
+}
 
-    (*size)--;
+static struct hotpage *pop_hotlist_heap(struct hotlist_heap *heap)
+{
+    struct hotpage *ret = NULL;
+    struct hotpage **arr = heap->arr;
+
+    if ( heap->size == 0 )
+        goto out;
+    if ( arr[0]->mfn == INVALID_MFN )
+        goto out;
+    
+    ret = arr[0];
+    arr[0] = arr[0]->pgid_next;
+
+    if ( cmphotpages(ret, arr[0]) > 0 )
+    {
+        heap->size--;
+        SWAP_HOTPAGES(arr[0], arr[heap->size]);
+    }
+
+    decrease_hotlist_heap(heap);
+out:
+    return ret;
+}
+
+static void rebase_hotlist_scores(void)
+{
+    int cpu;
+    unsigned int minscore = (unsigned int) -1;
+
+    for_each_online_cpu ( cpu )
+        if ( per_cpu(hotlist, cpu).score < minscore )
+            minscore = per_cpu(hotlist, cpu).score;
+    for_each_online_cpu ( cpu )
+        per_cpu(hotlist, cpu).score -= minscore;
+}
+
+
+static int alloc_info_buffer(void)
+{
+    int ret = 0;
+    unsigned long size = migrator_size;
+    unsigned int order = PAGE_ORDER_4K;
+
+    while ( (1ul << (PAGE_SHIFT+order)) < (size*sizeof(struct hotpage_info)) )
+        order++;
+
+    info_buffer = alloc_xenheap_pages(order, 0);
+    if ( info_buffer == NULL )
+        ret = -1;
 
     return ret;
 }
 
-static void normalize_cpuscores(void)
+static void free_info_buffer(void)
 {
-    int cpu, mincpu;
+    unsigned long size = migrator_size;
+    unsigned int order = PAGE_ORDER_4K;
 
-    mincpu = 0;
-    for_each_online_cpu ( cpu )
-        if ( per_cpu(cpuscore, cpu) < per_cpu(cpuscore, mincpu) )
-            mincpu = cpu;
-    for_each_online_cpu ( cpu )
-        if ( cpu != mincpu )
-            per_cpu(cpuscore, cpu) -= per_cpu(cpuscore, mincpu);
-    per_cpu(cpuscore, mincpu) = 0;
+    while ( (1ul << (PAGE_SHIFT+order)) < (size*sizeof(struct hotpage_info)) )
+        order++;
+
+    free_xenheap_pages(info_buffer, order);
+    info_buffer = NULL;
 }
 
-static void finalize_distpage(struct distpage *dist, unsigned long *scores)
+static void reset_info_buffer_slot(unsigned long slot)
 {
-    int node;
-
-    dist->major = 0;
-    for_each_online_cpu ( node )
-        if ( scores[node] > scores[dist->major] )
-            dist->major = node;
-
-    dist->local = scores[dist->major];
-    dist->distant = 0;
-    for_each_online_cpu ( node )
-        if ( node != dist->major )
-            dist->distant += scores[node];
+    info_buffer[slot].mfn = INVALID_MFN;
+    info_buffer[slot].gfn = INVALID_GFN;
+    info_buffer[slot].domain = NULL;
+    info_buffer[slot].lcrate = 0;
+    info_buffer[slot].lcscore = 0;
 }
 
-static void process_distpage(struct distpage *distants, size_t size,
-                             size_t *distsize, const struct distpage *dist)
+static void init_info_buffer(void)
 {
-    unsigned long node = phys_to_nid(dist->mfn << PAGE_SHIFT);
-    unsigned long crate = (dist->local * 100) / (dist->local + dist->distant);
-    unsigned long tmp;
-    size_t i, worst;
+    unsigned long i;
 
-    if ( dist->major == node )
-        return;
-    if ( dist->local < BIGOS_MIGRATOR_LCSCORE )
-        return;
-    if ( crate < BIGOS_MIGRATOR_LOCRATE )
-        return;
+    for (i=0; i<migrator_size; i++)
+        reset_info_buffer_slot(i);
+}
 
-    if ( *distsize < size )
-    {
-        distants[*distsize] = *dist;
-        (*distsize)++;
-        return;
-    }
 
-    worst = (size_t) -1;
+static void compute_scores(struct hotpage_info *dest, unsigned int *scores,
+                           unsigned long size)
+{
+    unsigned long i;
+    unsigned int total = 0;
+
+    dest->node = 0;
     for (i=0; i<size; i++)
-    {
-        tmp  = (distants[i].local * 100);
-        tmp /= (distants[i].local + distants[i].distant);
-        if ( tmp < crate )
-        {
-            crate = tmp;
-            worst = i;
-        }
-    }
+        if ( scores[i] > scores[dest->node] )
+            dest->node = i;
 
-    if ( worst == (size_t) -1 )
-        return;
+    for (i=0; i<size; i++)
+        total += scores[i];
 
-    distants[worst] = *dist;
+    dest->lcscore = scores[dest->node];
+
+    if ( total != 0 )
+        dest->lcrate = (scores[dest->node] * 100) / total;
+    else
+        dest->lcrate = 0;
 }
 
-static size_t find_distant_accesses(struct distpage *distants, size_t size)
+static void prepare_hotpage(struct hotpage_info *new)
 {
-    static struct hotpage *heap[NR_CPUS];
-    static unsigned long scores[NR_CPUS];
-    size_t heapsize, distsize = 0;
-    struct distpage dist;
+    unsigned long i;
+    unsigned long slot_min_lcrate = 0;
+
+    for (i=0; i<migrator_size; i++)
+        if ( info_buffer[i].lcrate < info_buffer[slot_min_lcrate].lcrate )
+            slot_min_lcrate = i;
+
+    if ( info_buffer[slot_min_lcrate].lcrate >= new->lcrate )
+        return;
+
+    info_buffer[slot_min_lcrate] = *new;
+}
+
+static void fill_info_buffer(void)
+{
+    static struct hotlist_heap heap;
+    static unsigned int score_per_node[NR_CPUS];      /* NR_CPUS >= NR_NODES */
+    struct hotpage_info new;
     struct hotpage *page;
-    int node;
+    int cpu, node;
 
-    normalize_cpuscores();
-    init_hotlist_heap(heap, &heapsize);
+    init_hotlist_heap(&heap);
 
-    dist.mfn = INVALID_MFN;
-    while ( heapsize > 0 )
+    new.mfn = INVALID_MFN;
+    for_each_online_cpu ( node )
+        score_per_node[node] = 0;
+
+    while ( (page = pop_hotlist_heap(&heap)) != NULL )
     {
-        page = pop_hotlist_heap(heap, &heapsize);
-        if ( page->mfn == INVALID_MFN )
-            break;
-        if ( page->score == 0 )
-            break;
-
-        if ( page->mfn != dist.mfn )
+        if ( page->mfn != new.mfn )
         {
-            if ( likely(dist.mfn != INVALID_MFN) )
-            {
-                finalize_distpage(&dist, scores);
-                process_distpage(distants, size, &distsize, &dist);
-            }
+            compute_scores(&new, score_per_node, NR_CPUS);
+
+            if ( new.lcscore >= migrator_lcscore
+                 && new.lcrate >= migrator_lcrate )
+                prepare_hotpage(&new);
 
             for_each_online_cpu ( node )
-                scores[node] = 0;
-            dist.mfn = page->mfn;
-            dist.gfn = page->gfn;
-            dist.domain = page->vcpu->domain;
+                score_per_node[node] = 0;
+            new.mfn = page->mfn;
+            new.gfn = page->gfn; /* no */
+            new.domain = page->vcpu->domain; /* no */
         }
 
-        scores[cpu_to_node(page->vcpu->processor)] += page->score
-            + per_cpu(cpuscore, page->vcpu->processor);
+        cpu  = page->vcpu->processor;
+        node = cpu_to_node(cpu);
+        score_per_node[node] += page->score + per_cpu(hotlist, cpu).score;
     }
+}
 
-    return distsize;
+static unsigned long moved = 0;
+static void flush_info_buffer(void)
+{
+    unsigned long i;
+
+    for (i=0; i<migrator_size; i++)
+        if ( info_buffer[i].domain && info_buffer[i].gfn != INVALID_GFN )
+        {
+            memory_move(info_buffer[i].domain, info_buffer[i].gfn,
+                        info_buffer[i].node);
+
+            moved++;
+            forget_page(info_buffer[i].mfn);
+
+            reset_info_buffer_slot(i);
+        }
 }
 
 static void migrator_main(unsigned long arg __attribute__((unused)))
 {
-    struct distpage distants[BIGOS_MIGRATOR_MAXMOVE];
-    size_t i, size;
+    if ( !monitoring_started )
+        return;
 
-    size = find_distant_accesses(distants, BIGOS_MIGRATOR_MAXMOVE);
-
-    for (i=0; i<size; i++)
-        memory_move(distants[i].domain, distants[i].gfn, distants[i].major);
+    rebase_hotlist_scores();
+    fill_info_buffer();
+    flush_info_buffer();
 
     migrator_last_schedule = NOW();
 }
@@ -444,7 +602,7 @@ static void schedule_migrator(void)
     if ( smp_processor_id() != 0 )
         return;
 
-    now -= BIGOS_MIGRATOR_SLEEPMS * 1000000ul;
+    now -= migrator_cooldown * 1000000ul;
     if ( now < migrator_last_schedule )
         return;
 
@@ -471,7 +629,7 @@ static int enable_monitoring_pebs(void)
     /* pebs_sethandler(pebs_nmi_handler); */
     /* pebs_enable(); */
     printk("PEBS useless in virtualization context !\n");
-    return -1;
+    return 0;
 }
 
 static void disable_monitoring_pebs(void)
@@ -502,7 +660,7 @@ static void ibs_nmi_handler(struct ibs_record *record)
     if (gfn == INVALID_MFN)
         return;
 
-    register_access(gfn, record->data_physical_address >> PAGE_SHIFT, current);
+    touch_page(gfn, record->data_physical_address >> PAGE_SHIFT, current);
     schedule_migrator();
 }
 
@@ -529,25 +687,98 @@ static void disable_monitoring_ibs(void)
 }
 
 
-int enable_monitoring(void)
+int monitor_hotlist_setsize(unsigned long size)
 {
-    init_hotlists();
+    int restart = monitoring_started;
+    
+    stop_monitoring();
+    hotlist_size = size;
+    
+    if ( restart )
+        return start_monitoring();
+    return 0;
+}
 
-    if ( ibs_capable() )
-        return enable_monitoring_ibs();
-    else if ( pebs_capable() )
-        return enable_monitoring_pebs();
+void monitor_hotlist_setparm(unsigned int score_enter, unsigned int score_incr,
+                             unsigned int score_decr, unsigned int score_max)
+{
+    hotlist_score_enter = score_enter;
+    hotlist_score_incr = score_incr;
+    hotlist_score_decr = score_decr;
+    hotlist_score_max = score_max;
+}
 
+
+int monitor_migration_setsize(unsigned long size)
+{
+    int restart = monitoring_started;
+
+    stop_monitoring();
+    migrator_size = size;
+
+    if ( restart )
+        return start_monitoring();
+    return 0;
+}
+
+void monitor_migration_setparm(unsigned long cooldown,
+			       unsigned int min_local_score,
+			       unsigned int min_local_rate)
+{
+    migrator_cooldown = cooldown;
+    migrator_lcscore = min_local_score;
+    migrator_lcrate = min_local_rate;
+}
+
+
+int start_monitoring(void)
+{
+    if ( monitoring_started )
+        return -1;
+    
+    if ( alloc_info_buffer() != 0 )
+        goto err;
+    if ( alloc_hotlist() != 0 )
+        goto err_ibuf;
+
+    init_info_buffer();
+    init_hotlist();
+
+    if ( ibs_capable() && enable_monitoring_ibs() == 0 )
+        goto out;
+    if ( pebs_capable() && enable_monitoring_pebs() == 0 )
+        goto out;
+    goto err_hlst;
+
+out:
+    monitoring_started = 1;
+    return 0;
+err_hlst:
     printk("Cannot find monitoring facility\n");
+    free_hotlist();
+err_ibuf:
+    free_info_buffer();
+err:
     return -1;
 }
 
-void disable_monitoring(void)
+void stop_monitoring(void)
 {
+    if ( !monitoring_started )
+        return;
+    
     if ( ibs_capable() )
         disable_monitoring_ibs();
     else if ( pebs_capable() )
         disable_monitoring_pebs();
+
+    free_hotlist();
+    free_info_buffer();
+
+    printk("moved = %lu\n", moved);
+    moved = 0;
+
+    monitoring_started = 0;
 }
 
  /*

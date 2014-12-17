@@ -2,7 +2,7 @@
 #include <xen/mm.h>
 
 
-#define DEFAULT_INSERTION     0
+#define DEFAULT_INSERTION     8
 #define DEFAULT_INCREMENT     8
 #define DEFAULT_DECREMENT     1
 #define DEFAULT_MAXIMUM    1024
@@ -337,6 +337,17 @@ void forget_entry(struct hotlist *list, unsigned long pgid)
 
     if ( found != NULL && found->pgid == pgid )
         free_hotlist_entry(list, found);
+}
+
+void flush_entries(struct hotlist *list)
+{
+    struct hotlist_entry *hottest = hottest_entry(list);
+
+    if ( unlikely(hottest == NULL) )
+        return;
+
+    list->score = hottest->score;
+    ensure_no_overflow(list);
 }
 
 

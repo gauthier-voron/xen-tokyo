@@ -40,6 +40,27 @@ void monitor_migration_setparm(unsigned long cooldown,
 			       unsigned int min_local_rate);
 
 
+
+
+
+int monitor_migration_settracked(unsigned long tracked);
+
+int monitor_migration_setcandidate(unsigned long candidate);
+
+int monitor_migration_setenqueued(unsigned long enqueued);
+
+int monitor_migration_setscores(unsigned int enter, unsigned int increment,
+				unsigned int decrement, unsigned int maximum);
+
+int monitor_migration_setcriterias(unsigned int min_node_score,
+				   unsigned int min_node_rate);
+
+int monitor_migration_setrules(unsigned int maxtries);
+
+
+
+int decide_migration(void);
+
 /*
  * Start the monitoring of the system.
  * This allocate the memory necessary for the monitoring structure to work
@@ -54,7 +75,6 @@ int start_monitoring(void);
  * allocated by start_monitoring().
  */
 void stop_monitoring(void);
-
 
 
 #endif

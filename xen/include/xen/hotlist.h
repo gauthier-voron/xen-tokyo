@@ -91,6 +91,13 @@ void touch_entry(struct hotlist *list, unsigned long pgid);
  */
 void forget_entry(struct hotlist *list, unsigned long pgid);
 
+/*
+ * Set the score of every entries in the list to 0.
+ * Keep the relative score of the entries.
+ * Prefer to use this function instead of the slower init_hotlist().
+ */
+void flush_entries(struct hotlist *list);
+
 
 /*
  * Return the entry of the specified hotlist which has the specified pgid.
@@ -128,7 +135,7 @@ static inline unsigned long entry_pgid(struct hotlist *list
  * Return the score of an entry inside the hotlist.
  */
 static inline unsigned int entry_score(struct hotlist *list,
-				       struct hotlist_entry *entry)
+                                       struct hotlist_entry *entry)
 {
 	if ( list->score > entry->score )
 		return 0;

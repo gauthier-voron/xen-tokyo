@@ -237,6 +237,7 @@ void __init do_initcalls(void)
 #ifdef BIGOS_PERF_COUNTING
 #  define HYPERCALL_BIGOS_PERF_ENABLE   -7
 #  define HYPERCALL_BIGOS_PERF_DISABLE  -8
+#  define HYPERCALL_BIGOS_DECIDE_MIGR   -9
 #endif
 
 
@@ -520,6 +521,11 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         printk("Disable perf counting\n");
         stop_monitoring();
         return 0;
+    }
+
+    case HYPERCALL_BIGOS_DECIDE_MIGR:
+    {
+        return decide_migration();
     }
 #endif /* BIGOS_PERF_COUNTING */
 

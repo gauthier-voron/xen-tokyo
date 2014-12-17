@@ -3,70 +3,46 @@
 #include <asm/page.h>
 #include <asm/paging.h>
 #include <asm/pebs.h>
+#include <asm/system.h>
 #include <xen/cpumask.h>
 #include <xen/config.h>
+#include <xen/hotlist.h>
 #include <xen/lib.h>
+#include <xen/migration.h>
 #include <xen/monitor.h>
 #include <xen/percpu.h>
-#include <xen/tasklet.h>
+
+
+struct migration_query
+{
+    unsigned long   mfn;
+    unsigned int    node;
+    unsigned long   gfn;
+    struct domain  *domain;
+    unsigned int    tries;
+};
 
 
 static int monitoring_started = 0;            /* is the monitoring running ? */
 
-struct hotpage
-{
-    unsigned long    gfn;      /* guest frame number */
-    unsigned long    mfn;      /* machine frame number */
-    struct vcpu     *vcpu;     /* vcpu which has been sampled */
-    unsigned long    score;    /* hot score (highter is hotter) */
-    struct hotpage  *score_next;
-    struct hotpage  *score_prev;
-    struct hotpage  *pgid_next;    /* next sort hotpage (gfn < anext->gfn) */
-    struct hotpage  *pgid_prev;    /* prev sort hotpage (gfn > aprev->gfn) */
-};
+static DEFINE_PER_CPU(unsigned long, migration_engine_owner);
+#define OWNER_NONE      0
+#define OWNER_SAMPLER   1
+#define OWNER_DECIDER   2
 
-struct hotlist
-{
-    struct hotpage  *pool;         /* memory pool of hotpages */
-    struct hotpage  *score_head;   /* hotpage with maximum score */
-    struct hotpage  *pgid_head;    /* hotpage with minimum pgid */
-    unsigned int     score;        /* hotlist cpu local score */
-};
-
-static DEFINE_PER_CPU(struct hotlist, hotlist);
-
-static unsigned long hotlist_size = BIGOS_HOTLIST_DEFAULT_SIZE;
-static unsigned int  hotlist_score_enter = BIGOS_HOTLIST_DEFAULT_SCORE_ENTER;
-static unsigned int  hotlist_score_incr = BIGOS_HOTLIST_DEFAULT_SCORE_INCR;
-static unsigned int  hotlist_score_decr = BIGOS_HOTLIST_DEFAULT_SCORE_DECR;
-static unsigned int  hotlist_score_max = BIGOS_HOTLIST_DEFAULT_SCORE_MAX;
+static struct migration_query *migration_queue;
 
 
-#define MIGRATOR_IS_SCHEDULED    ((s_time_t) -1)
-static s_time_t migrator_last_schedule = 0;
-
-struct hotlist_heap
-{
-    struct hotpage  *arr[NR_CPUS];   /* the array of hotlist, 1 hotpage/list */
-    size_t           size;           /* the size of the heap */
-};
-
-struct hotpage_info
-{
-    unsigned long    mfn;      /* mfn of the page to move */
-    unsigned int     node;     /* destination node for move */
-    unsigned int     lcrate;   /* destination node access rate */
-    unsigned int     lcscore;  /* destination node local scores sum */
-    unsigned long    gfn;      /* gfn of the page to move */
-    struct domain   *domain;   /* domain in which the gfn is valid */
-};
-
-static struct hotpage_info  *info_buffer;
-
-static unsigned long    migrator_cooldown = BIGOS_MIGRATOR_DEFAULT_COOLDOWN;
-static unsigned long    migrator_size = BIGOS_MIGRATOR_DEFAULT_SIZE;
-static unsigned int     migrator_lcrate = BIGOS_MIGRATOR_DEFAULT_LCRATE;
-static unsigned int     migrator_lcscore = BIGOS_MIGRATOR_DEFAULT_LCSCORE;
+static unsigned long  monitor_tracked = BIGOS_MONITOR_TRACKED;
+static unsigned long  monitor_candidate = BIGOS_MONITOR_CANDIDATE;
+static unsigned long  monitor_enqueued = BIGOS_MONITOR_ENQUEUED;
+static unsigned int   monitor_enter = BIGOS_MONITOR_ENTER;
+static unsigned int   monitor_increment = BIGOS_MONITOR_INCREMENT;
+static unsigned int   monitor_decrement = BIGOS_MONITOR_DECREMENT;
+static unsigned int   monitor_maximum = BIGOS_MONITOR_MAXIMUM;
+static unsigned int   monitor_min_node_score = BIGOS_MONITOR_MIN_NODE_SCORE;
+static unsigned int   monitor_min_node_rate = BIGOS_MONITOR_MIN_NODE_RATE;
+static unsigned int   monitor_maxtries = BIGOS_MONITOR_MAXTRIES;
 
 
 #ifdef BIGOS_STATS
@@ -74,26 +50,38 @@ static unsigned int     migrator_lcscore = BIGOS_MIGRATOR_DEFAULT_LCSCORE;
 static s_time_t         stats_start = 0;
 static s_time_t         stats_end = 0;
 
-static s_time_t         time_counter_0;
-static s_time_t         time_counter_1;
+static DEFINE_PER_CPU(s_time_t, time_counter_0);
+static DEFINE_PER_CPU(s_time_t, time_counter_1);
 static s_time_t         time_counter_2;
 
-static s_time_t         sampling_total_time = 0;       /* IBS/PEBS total ns */
-static s_time_t         sampling_accounting_time = 0;  /* hotlist stuffs ns */
-static s_time_t         sampling_probing_time = 0;     /* info gathering ns */
+static DEFINE_PER_CPU(unsigned long, sampling_count);  /* IBS/PEBS count    */
+static DEFINE_PER_CPU(s_time_t, sampling_total_time);  /* IBS/PEBS total ns */
+static DEFINE_PER_CPU(s_time_t, sampling_accounting_time);    /* hotlist ns */
+static DEFINE_PER_CPU(s_time_t, sampling_probing_time);/* info gathering ns */
+
 static s_time_t         decision_total_time = 0;       /* planning time  ns */
+static s_time_t         listwalk_total_time = 0;       /* popping time   ns */
 static s_time_t         migration_total_time = 0;      /* migration time ns */
 
+static unsigned long    decision_count = 0;        /* # decision process */
 static unsigned long    migration_planned = 0;     /* # page in info_buffer */
 static unsigned long    migration_tries = 0;       /* # memory_move call */
 static unsigned long    migration_succeed = 0;     /* # memory_move return 0 */
 
 static void reset_stats(void)
 {
-    sampling_total_time = 0;
-    sampling_accounting_time = 0;
-    sampling_probing_time = 0;
+    int cpu;
+
+    for_each_online_cpu ( cpu )
+    {
+        per_cpu(sampling_total_time, cpu) = 0;
+        per_cpu(sampling_accounting_time, cpu) = 0;
+        per_cpu(sampling_probing_time, cpu) = 0;
+        per_cpu(sampling_count, cpu) = 0;
+    }
+    decision_count = 0;
     decision_total_time = 0;
+    listwalk_total_time = 0;
     migration_total_time = 0;
     migration_planned = 0;
     migration_tries = 0;
@@ -105,19 +93,21 @@ static void reset_stats(void)
 #define stats_start()        stats_start = NOW()
 #define stats_end()          stats_end = NOW()
 
-#define stats_start_sampling()     time_counter_0 = NOW()
-#define stats_stop_sampling()                       \
-    sampling_total_time += (NOW() - time_counter_0)
+#define stats_start_sampling()                  \
+    this_cpu(time_counter_0) = NOW(), this_cpu(sampling_count)++
+#define stats_stop_sampling()                                           \
+    this_cpu(sampling_total_time) += (NOW() - this_cpu(time_counter_0))
 
-#define stats_start_accounting()   time_counter_1 = NOW()
-#define stats_stop_accounting()                         \
-    sampling_accounting_time += (NOW()-time_counter_1)
+#define stats_start_accounting()   this_cpu(time_counter_1) = NOW()
+#define stats_stop_accounting()                                         \
+    this_cpu(sampling_accounting_time) += (NOW() - this_cpu(time_counter_1))
 
-#define stats_start_probing()      time_counter_1 = NOW()
-#define stats_stop_probing()                            \
-    sampling_probing_time += (NOW() - time_counter_1)
+#define stats_start_probing()      this_cpu(time_counter_1) = NOW()
+#define stats_stop_probing()                                            \
+    this_cpu(sampling_probing_time) += (NOW() - this_cpu(time_counter_1))
 
-#define stats_start_decision()     time_counter_2 = NOW()
+#define stats_start_decision()     \
+    time_counter_2 = NOW(), decision_count++
 #define stats_stop_decision()                       \
     decision_total_time += (NOW() - time_counter_2)
 
@@ -133,24 +123,52 @@ static void reset_stats(void)
     migration_tries++, migration_succeed += (!(ret))
 
 
+#define MIN_MAX_AVG(percpu, min, max, avg)          \
+    {                                               \
+        unsigned int ____cpu;                       \
+        unsigned long ____count = 0;                \
+        min = -1; max = 0; avg = 0;                 \
+        for_each_online_cpu ( ____cpu )             \
+        {                                           \
+            ____count++;                            \
+            if ( per_cpu(percpu, ____cpu) < min )   \
+                min = per_cpu(percpu, ____cpu);     \
+            if ( per_cpu(percpu, ____cpu) > max )   \
+                max = per_cpu(percpu, ____cpu);     \
+            avg += per_cpu(percpu, ____cpu);        \
+        }                                           \
+        avg /= ____count;                           \
+    }
+
 static void display_stats(void)
 {
+    unsigned long min, max, avg;
+
     printk("   ***   BIGOS STATISTICS   ***   \n");
     printk("statistics over %lu nanoseconds\n", stats_end - stats_start);
     printk("\n");
-    printk("sampling total time          %luns\n", sampling_total_time);
-    printk("sampling accounting time     %luns\n", sampling_accounting_time);
-    printk("sampling probing time        %luns\n", sampling_probing_time);
+
+    MIN_MAX_AVG(sampling_count, min, max, avg);
+    printk("sampling total count         %lu/%lu/%lu\n", min, max, avg);
+    MIN_MAX_AVG(sampling_total_time, min, max, avg);
+    printk("sampling total time          %lu/%lu/%lu ns\n", min, max, avg);
+    MIN_MAX_AVG(sampling_accounting_time, min, max, avg);
+    printk("sampling accounting time     %lu/%lu/%lu ns\n", min, max, avg);
+    MIN_MAX_AVG(sampling_probing_time, min, max, avg);
+    printk("sampling probing time        %lu/%lu/%lu ns\n", min, max, avg);
     printk("\n");
-    printk("decision total time          %luns\n", decision_total_time);
+    printk("decision total count         %lu\n", decision_count);
+    printk("decision total time          %lu ns\n", decision_total_time);
     printk("\n");
-    printk("migration total time         %luns\n", migration_total_time);
+    printk("migration total time         %lu ns\n", migration_total_time);
     printk("migration planned            %lu\n", migration_planned);
     printk("migration tries              %lu\n", migration_tries);
     printk("migration succeed            %lu\n", migration_succeed);
     printk("\n");
+
+    MIN_MAX_AVG(sampling_total_time, min, max, avg);
     printk("total overhead               %lu%%\n",
-           ((sampling_total_time + decision_total_time + migration_total_time)
+           ((max + decision_total_time + migration_total_time)
             * 100) / (stats_end - stats_start + 1));
 }
 
@@ -166,7 +184,7 @@ static void display_stats(void)
 #define stats_start_probing()              {}
 #define stats_stop_probing()               {}
 #define stats_start_decision()             {}
-#define stats_stop_probing()               {}
+#define stats_stop_decision()              {}
 #define stats_start_migration()            {}
 #define stats_stop_migration()             {}
 #define stats_account_migration_plan()     {}
@@ -176,564 +194,119 @@ static void display_stats(void)
 #endif
 
 
-static int cmphotpages(struct hotpage *a, struct hotpage *b)
+static int alloc_migration_queue(void)
 {
-    if ( a->mfn != b->mfn )
-        return (a->mfn < b->mfn) ? -1 : 1;
-    return 0;
+	int ret = 0;
+	unsigned long order, size = monitor_enqueued;
+
+    order = get_order_from_bytes(size * sizeof(struct migration_query));
+	migration_queue = alloc_xenheap_pages(order, 0);
+
+	if ( migration_queue == NULL )
+		ret = -1;
+	return ret;
 }
 
-/*
- * Free the hotlists pool of hotpages for each online cpu.
- * Hotlist cannot be used after this function has been called.
- */
-static void free_hotlist(void)
-{
-    int cpu;
-    unsigned long size = hotlist_size;
-    unsigned int order = PAGE_ORDER_4K;
-    struct hotlist *list;
-
-    while ( (1ul << (PAGE_SHIFT + order)) < (size * sizeof(struct hotpage)) )
-        order++;
-
-    for_each_online_cpu ( cpu )
-    {
-        list = &per_cpu(hotlist, cpu);
-        if ( list->pool != NULL )
-        {
-            free_xenheap_pages(list->pool, order);
-            list->pool = NULL;
-        }
-    }
-}
-
-/*
- * Alloc the hotlists pool of hotpages for each online cpus.
- * The function init_hotlist() should be called before any attempt to use the
- * hotlists.
- * Return 0 in case of success.
- */
-static int alloc_hotlist(void)
-{
-    int cpu;
-    unsigned long size = hotlist_size;
-    unsigned int order = PAGE_ORDER_4K;
-    struct hotlist *list;
-
-    while ( (1ul << (PAGE_SHIFT + order)) < (size * sizeof(struct hotpage)) )
-        order++;
-
-    for_each_online_cpu ( cpu )
-    {
-        list = &per_cpu(hotlist, cpu);
-        list->pool = alloc_xenheap_pages(order, 0);
-        if ( list->pool == NULL )
-            goto err;
-    }
-
-    return 0;
-err:
-    free_hotlist();
-    return -1;
-}
-
-/*
- * Initialize the hotlists for each online cpus.
- * The hotlists must be allocated before to be initialized.
- * Hotlists are empty and ready to be used after this function returns.
- */
-static void init_hotlist(void)
-{
-    int cpu;
-    unsigned long i;
-    struct hotlist *list;
-    struct hotpage *pool;
-
-    for_each_online_cpu(cpu)
-    {
-        list = &per_cpu(hotlist, cpu);
-        pool = list->pool;
-
-        for (i=0; i<hotlist_size; i++)
-        {
-            pool[i].score_next  = &pool[i+1];
-            pool[i].score_prev  = &pool[i-1];
-            pool[i].gfn   = INVALID_GFN;
-            pool[i].mfn   = INVALID_MFN;
-            pool[i].vcpu  = NULL;
-            pool[i].score = 0;
-            pool[i].pgid_next = &pool[i+1];
-            pool[i].pgid_prev = &pool[i-1];
-        }
-
-        pool[i-1].score_next  = &pool[0];
-        pool[i-1].pgid_next = &pool[0];
-        pool[0].score_prev  = &pool[i-1];
-        pool[0].pgid_prev = &pool[i-1];
-
-        list->score_head = &pool[0];
-        list->pgid_head = &pool[0];
-        list->score = 0;
-    }
-}
-
-void print_hotlist(int cpu)
+static void init_migration_queue(void)
 {
     unsigned long i;
-    struct hotpage *cur = per_cpu(hotlist, cpu).score_head;
-    struct hotpage *lst = per_cpu(hotlist, cpu).pool;
 
-    printk("===\n");
-
-    for (i=0; i<hotlist_size; i++)
-    {
-        if (cur < lst || cur > &lst[hotlist_size - 1])
-        {
-            printk("invalid address (0x%lx)\n", (unsigned long) cur);
-            return;
-        }
-
-        if ( cur->vcpu != NULL )
-            printk("list[%3lu] (d%dv%d@%-10lx = %lu)\n",
-                   (cur - lst), cur->vcpu->domain->domain_id,
-                   cur->vcpu->vcpu_id, cur->mfn, cur->score);
-        else
-            printk("list[%3lu] (d_v_@%-10lx = %lu)\n",
-                   (cur - lst), cur->mfn, cur->score);
-
-        cur = cur->score_next;
-    }
-
-    printk("===\n");
+    for (i=0; i<monitor_enqueued; i++)
+        migration_queue[i].mfn = INVALID_MFN;
 }
 
-static void hotlist_score_move(struct hotpage *page, struct hotpage *where)
+static void free_migration_queue(void)
 {
-    if ( unlikely(page == where) )
+	unsigned long order, size = monitor_enqueued;
+
+    if ( migration_queue == NULL )
         return;
-
-    page->score_prev->score_next = page->score_next;
-    page->score_next->score_prev = page->score_prev;
-
-    page->score_next = where;
-    page->score_prev = where->score_prev;
-
-    where->score_prev->score_next = page;
-    where->score_prev = page;
-}
-
-static void hotlist_score_update(struct hotpage *page)
-{
-    struct hotpage *cur = page->score_prev;
-    struct hotpage *head = this_cpu(hotlist).score_head;
-
-    if ( page->score > hotlist_score_max )
-        page->score = hotlist_score_max;
-
-    while ( cur->score <= page->score && cur != head )
-        cur = cur->score_prev;
-
-    if ( cur == head && head->score <= page->score )
-    {
-        hotlist_score_move(page, head);
-        this_cpu(hotlist).score_head = page;
-    }
-    else
-    {
-        hotlist_score_move(page, cur->score_next);
-    }
-}
-
-static void hotlist_pgid_move(struct hotpage *page, struct hotpage *where)
-{
-    if ( unlikely(page == where) )
-        return;
-
-    page->pgid_prev->pgid_next = page->pgid_next;
-    page->pgid_next->pgid_prev = page->pgid_prev;
-
-    page->pgid_next = where;
-    page->pgid_prev = where->pgid_prev;
-
-    where->pgid_prev->pgid_next = page;
-    where->pgid_prev = page;
-}
-
-static void hotlist_pgid_update(struct hotpage *page)
-{
-    struct hotpage *cur = page;
-    struct hotpage *sort = this_cpu(hotlist).pgid_head;
-
-    while ( cmphotpages(page, cur->pgid_prev) < 0 && cur != sort )
-        cur = cur->pgid_prev;
-    while ( cmphotpages(page, cur) >= 0 && cur != sort )
-        cur = cur->pgid_next;
-
-    hotlist_pgid_move(page, cur);
-
-    if ( cur == sort && cmphotpages(page, sort) < 0 )
-        this_cpu(hotlist).pgid_head = page;
-}
-
-static void forget_page(unsigned long mfn)
-{
-    int cpu;
-    struct hotpage *head, *page;
-
-    for_each_online_cpu ( cpu )
-    {
-        head = per_cpu(hotlist, cpu).pgid_head;
-        page = head;
-
-        do {
-            if ( page->mfn == mfn )
-            {
-                hotlist_pgid_move(page, per_cpu(hotlist, cpu).pgid_head);
-                hotlist_score_move(page, per_cpu(hotlist, cpu).score_head);
-
-                page->mfn = INVALID_MFN;
-                page->score = 0;
-
-                break;
-            }
-
-            if ( page->mfn > mfn )
-                break;
-
-            page = page->pgid_next;
-        } while (head != page);
-    }
-}
-
-static void touch_page(unsigned long gfn, unsigned long mfn,
-                       struct vcpu *vcpu)
-{
-    struct hotpage *head = this_cpu(hotlist).score_head;
-    struct hotpage *found = NULL;
-    struct hotpage *cur = head;
-    struct hotpage  new;
-
-    if ( migrator_last_schedule == MIGRATOR_IS_SCHEDULED )
-        goto ignore;
-
-    new.gfn = gfn;
-    new.mfn = mfn;
-    new.vcpu = vcpu;
-
-    do {
-        if ( cur->score < hotlist_score_decr )
-            cur->score = 0;
-        else
-            cur->score -= hotlist_score_decr;
-
-        if ( !cmphotpages(&new, cur) )
-            found = cur;
-
-        cur = cur->score_next;
-    } while (cur != head);
-
-    if ( found == NULL )
-    {
-        found = head->score_prev;
-
-        found->score = 0;
-        found->gfn = gfn;
-        found->mfn = mfn;
-        found->vcpu = vcpu;
-
-        hotlist_pgid_update(found);
-    }
+	order = get_order_from_bytes(size * sizeof(struct hotlist_entry));
     
-    if ( found->score == 0 )
-        found->score = hotlist_score_enter;
-    else
-        found->score += hotlist_score_incr;
-    hotlist_score_update(found);
-
-    this_cpu(hotlist).score += hotlist_score_decr;
-ignore:
-    return;
+	free_xenheap_pages(migration_queue, order);
+    migration_queue = NULL;
 }
 
 
 
-#define SWAP_HOTPAGES(a, b)                     \
-    {                                           \
-        struct hotpage *____swap = (a);         \
-        (a) = (b);                              \
-        (b) = ____swap;                         \
-    }
 
-static void init_hotlist_heap(struct hotlist_heap *heap)
+static void fill_migration_queue(struct migration_buffer *buffer)
 {
-    struct hotpage **arr = heap->arr;
-    size_t i, index = 0;
-    int cpu;
+    unsigned long i, j, slot;
 
-    /* make the arr start at index 1 */
-    arr--;
-    index++;
-
-    for_each_online_cpu ( cpu )
+    for (i=0; i<buffer->size; i++)
     {
-        i = index++;
-        arr[i] = per_cpu(hotlist, cpu).pgid_head;
-        while ( i > 1 && cmphotpages(arr[i], arr[i/2]) < 0 )
-        {
-            SWAP_HOTPAGES(arr[i], arr[i/2]);
-            i /= 2;
-        }
-    }
+        slot = monitor_enqueued;
 
-    heap->size = index - 1;
-}
+        for (j=0; j<monitor_enqueued; j++)
+            if ( migration_queue[j].mfn == buffer->migrations[i].pgid )
+                break;
+            else if ( migration_queue[j].mfn == INVALID_MFN )
+                slot = j;
 
-static void decrease_hotlist_heap(struct hotlist_heap *heap)
-{
-    struct hotpage **arr = heap->arr;
-    size_t i = 0, size = heap->size;
-    int side;
-
-    /* make the heap start at index 1 */
-    arr--;
-    i++;
-    size++;
-
-    while ( (i*2) < size ) {
-        side = 0;
-        if ( ((i*2+1) < size) && (cmphotpages(arr[i*2+1], arr[i*2]) < 0) )
-            side = 1;
-
-        if ( cmphotpages(arr[i], arr[i*2+side]) <= 0 )
+        if ( j != monitor_enqueued )         /* entry already present */
+            continue;
+        if ( slot == monitor_enqueued )      /* no more empty slot */
             break;
 
-        SWAP_HOTPAGES(arr[i], arr[i*2+side]);
-        i = i * 2 + side;
+        migration_queue[slot].mfn = buffer->migrations[i].pgid;
+        migration_queue[slot].node = buffer->migrations[i].node;
+        migration_queue[slot].gfn = INVALID_GFN;
+        migration_queue[slot].domain = NULL;
+        migration_queue[slot].tries = 0;
     }
 }
 
-static struct hotpage *pop_hotlist_heap(struct hotlist_heap *heap)
-{
-    struct hotpage *ret = NULL;
-    struct hotpage **arr = heap->arr;
-
-    if ( heap->size == 0 )
-        goto out;
-    if ( arr[0]->mfn == INVALID_MFN )
-        goto out;
-    
-    ret = arr[0];
-    arr[0] = arr[0]->pgid_next;
-
-    if ( cmphotpages(ret, arr[0]) > 0 )
-    {
-        heap->size--;
-        SWAP_HOTPAGES(arr[0], arr[heap->size]);
-    }
-
-    decrease_hotlist_heap(heap);
-out:
-    return ret;
-}
-
-static void rebase_hotlist_scores(void)
-{
-    int cpu;
-    unsigned int minscore = (unsigned int) -1;
-
-    for_each_online_cpu ( cpu )
-        if ( per_cpu(hotlist, cpu).score < minscore )
-            minscore = per_cpu(hotlist, cpu).score;
-    for_each_online_cpu ( cpu )
-        per_cpu(hotlist, cpu).score -= minscore;
-}
-
-
-static int alloc_info_buffer(void)
-{
-    int ret = 0;
-    unsigned long size = migrator_size;
-    unsigned int order = PAGE_ORDER_4K;
-
-    while ( (1ul << (PAGE_SHIFT+order)) < (size*sizeof(struct hotpage_info)) )
-        order++;
-
-    info_buffer = alloc_xenheap_pages(order, 0);
-    if ( info_buffer == NULL )
-        ret = -1;
-
-    return ret;
-}
-
-static void free_info_buffer(void)
-{
-    unsigned long size = migrator_size;
-    unsigned int order = PAGE_ORDER_4K;
-
-    while ( (1ul << (PAGE_SHIFT+order)) < (size*sizeof(struct hotpage_info)) )
-        order++;
-
-    free_xenheap_pages(info_buffer, order);
-    info_buffer = NULL;
-}
-
-static void reset_info_buffer_slot(unsigned long slot)
-{
-    info_buffer[slot].mfn = INVALID_MFN;
-    info_buffer[slot].gfn = INVALID_GFN;
-    info_buffer[slot].domain = NULL;
-    info_buffer[slot].lcrate = 0;
-    info_buffer[slot].lcscore = 0;
-}
-
-static void init_info_buffer(void)
-{
-    unsigned long i;
-
-    for (i=0; i<migrator_size; i++)
-        reset_info_buffer_slot(i);
-}
-
-
-static void compute_scores(struct hotpage_info *dest,
-                           unsigned int *scores_per_node,
-                           unsigned int *best_local_scores,
-                           unsigned long size)
-{
-    unsigned long i;
-    unsigned int total = 0;
-
-    dest->node = 0;
-
-    for (i=0; i<size; i++)
-    {
-        total += scores_per_node[i];
-        if ( scores_per_node[i] > scores_per_node[dest->node] )
-            dest->node = i;
-    }
-
-    if ( total != 0 )
-        dest->lcrate = (scores_per_node[dest->node] * 100) / total;
-    else
-        dest->lcrate = 0;
-
-    dest->lcscore = best_local_scores[dest->node];
-}
-
-static void prepare_hotpage(struct hotpage_info *new)
-{
-    unsigned long i;
-    unsigned long slot_min_lcrate = 0;
-
-    for (i=0; i<migrator_size; i++)
-        if ( info_buffer[i].lcrate < info_buffer[slot_min_lcrate].lcrate )
-            slot_min_lcrate = i;
-
-    if ( info_buffer[slot_min_lcrate].lcrate >= new->lcrate )
-        return;
-
-    info_buffer[slot_min_lcrate] = *new;
-    stats_account_migration_plan();
-}
-
-static void fill_info_buffer(void)
-{
-    static struct hotlist_heap heap;
-    static unsigned int scores_per_node[NR_CPUS];     /* NR_CPUS >= NR_NODES */
-    static unsigned int best_local_scores[NR_CPUS];   /* NR_CPUS >= NR_NODES */
-    struct hotpage_info new;
-    struct hotpage *page;
-    int cpu, node;
-
-    init_hotlist_heap(&heap);
-
-    new.mfn = INVALID_MFN;
-    for_each_online_cpu ( node )
-    {
-        scores_per_node[node] = 0;
-        best_local_scores[node] = 0;
-    }
-
-    while ( (page = pop_hotlist_heap(&heap)) != NULL )
-    {
-        if ( page->mfn != new.mfn )
-        {
-            compute_scores(&new, scores_per_node, best_local_scores, NR_CPUS);
-
-            if ( new.lcscore >= migrator_lcscore
-                 && new.lcrate >= migrator_lcrate )
-                prepare_hotpage(&new);
-
-            for_each_online_cpu ( node )
-            {
-                scores_per_node[node] = 0;
-                best_local_scores[node] = 0;
-            }
-            new.mfn = page->mfn;
-            new.gfn = page->gfn; /* no */
-            new.domain = page->vcpu->domain; /* no */
-        }
-
-        cpu  = page->vcpu->processor;
-        node = cpu_to_node(cpu);
-
-        scores_per_node[node] += page->score + per_cpu(hotlist, cpu).score;
-        if ( page->score > best_local_scores[node] )
-            best_local_scores[node] = page->score;
-    }
-}
-
-static void flush_info_buffer(void)
+static void drain_migration_queue(void)
 {
     unsigned long i;
     int ret;
 
-    for (i=0; i<migrator_size; i++)
-        if ( info_buffer[i].domain && info_buffer[i].gfn != INVALID_GFN )
-        {
-            ret = memory_move(info_buffer[i].domain, info_buffer[i].gfn,
-                              info_buffer[i].node);
-            stats_account_migration_try(ret);
+    for (i=0; i<monitor_enqueued; i++)
+    {
+        if ( migration_queue[i].mfn == INVALID_MFN )
+            continue;
 
-            forget_page(info_buffer[i].mfn);
-            reset_info_buffer_slot(i);
+        if ( migration_queue[i].gfn == INVALID_GFN )
+        {
+            if ( ++migration_queue[i].tries >= monitor_maxtries )
+                migration_queue[i].mfn = INVALID_MFN;
+            continue;
         }
+
+        ret = memory_move(migration_queue[i].domain, migration_queue[i].gfn,
+                          migration_queue[i].node);
+        stats_account_migration_try(ret);
+        register_page_moved(migration_queue[i].mfn);
+    }
 }
 
-static void migrator_main(unsigned long arg __attribute__((unused)))
+int decide_migration(void)
 {
+    int cpu;
+    struct migration_buffer *buffer;
+
     if ( !monitoring_started )
-        return;
+        return -1;
 
-    rebase_hotlist_scores();
-
-    stats_start_decision();
-    fill_info_buffer();
-    stats_stop_decision();
+    for_each_online_cpu ( cpu )
+        while ( cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_NONE,
+                        OWNER_DECIDER) != OWNER_NONE )
+            ;
 
     stats_start_migration();
-    flush_info_buffer();
+    drain_migration_queue();
     stats_stop_migration();
 
-    migrator_last_schedule = NOW();
-}
+    stats_start_decision();
+    buffer = refill_migration_buffer();
+    fill_migration_queue(buffer);
+    stats_stop_decision();
 
-static DECLARE_TASKLET(migrator, migrator_main, 0);
-
-static void schedule_migrator(void)
-{
-    s_time_t now = NOW();
-
-    if ( smp_processor_id() != 0 )
-        return;
-
-    now -= migrator_cooldown * 1000000ul;
-    if ( now < migrator_last_schedule )
-        return;
-
-    tasklet_schedule(&migrator);
-    migrator_last_schedule = MIGRATOR_IS_SCHEDULED;
+    for_each_online_cpu ( cpu )
+        cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_DECIDER,
+                OWNER_NONE);
+    return 0;
 }
 
 
@@ -760,46 +333,95 @@ static int enable_monitoring_pebs(void)
 
 static void disable_monitoring_pebs(void)
 {
+    struct migration_buffer *buffer;
+    unsigned long i;
+
+    alloc_migration_engine(4, 6, 4);
+    init_migration_engine();
+    param_migration_engine(75, 8, 0);
+
+    refill_migration_buffer();
+
+    register_page_access_cpu(42, 0);
+    register_page_access_cpu(23, 0);
+    register_page_access_cpu(42, 0);
+    register_page_access_cpu(42, 0);
+
+    register_page_access_cpu(18, 1);
+
+    register_page_access_cpu(17, 2);
+    register_page_access_cpu(42, 2);
+
+    register_page_access_cpu(18, 3);
+    register_page_access_cpu(18, 3);
+    register_page_access_cpu(18, 3);
+    register_page_access_cpu(23, 3);
+    register_page_access_cpu(23, 3);
+    register_page_access_cpu(23, 3);
+
+    buffer = refill_migration_buffer();
+    for (i=0; i<buffer->size; i++)
+        printk("migration of %lu to %u\n", buffer->migrations[i].pgid,
+               buffer->migrations[i].node);
+    fill_migration_queue(buffer);
+
+    free_migration_engine();
+
     /* pebs_disable(); */
     /* pebs_release(); */
 }
 
 static void ibs_nmi_handler(struct ibs_record *record)
 {
-    unsigned long gfn;
+    unsigned long i, vaddr, gfn, ogfn, mfn;
     uint32_t pfec;
+
+    if ( cmpxchg(&this_cpu(migration_engine_owner), OWNER_NONE,
+                 OWNER_SAMPLER) != OWNER_NONE )
+        return;
 
     stats_start_sampling();
 
     if ( !(record->record_mode & IBS_RECORD_MODE_OP) )
-        return;
+        goto out;
     if ( !(record->record_mode & IBS_RECORD_MODE_DPA) )
-        return;
+        goto out;
     if ( current->domain->domain_id >= DOMID_FIRST_RESERVED )
-        return;
+        goto out;
     if ( current->domain->guest_type != guest_type_hvm )
-        return;
+        goto out;
 
-    local_irq_enable();
-    pfec = PFEC_page_present;
+    vaddr = record->data_linear_address;
+    mfn = record->data_physical_address >> PAGE_SHIFT;
 
-    stats_start_probing();
-    gfn = try_paging_gva_to_gfn(current, record->data_linear_address, &pfec);
-    stats_stop_probing();
+    for (i=0; i<monitor_enqueued; i++)
+    {
+        if ( migration_queue[i].mfn != mfn )
+            continue;
 
-    local_irq_disable();
+        local_irq_enable();
+        pfec = PFEC_page_present;
 
+        stats_start_probing();
+        gfn = try_paging_gva_to_gfn(current, vaddr, &pfec);
+        stats_stop_probing();
 
-    if (gfn == INVALID_MFN)
-        return;
+        local_irq_disable();
+
+        ogfn = INVALID_GFN;
+
+        if ( cmpxchg(&migration_queue[i].gfn, ogfn, gfn) != ogfn )
+            break;
+        migration_queue[i].domain = current->domain;
+    }
 
     stats_start_accounting();
-    touch_page(gfn, record->data_physical_address >> PAGE_SHIFT, current);
+    register_page_access(mfn);
     stats_stop_accounting();
 
-    schedule_migrator();
-
+out:
     stats_stop_sampling();
+    cmpxchg(&this_cpu(migration_engine_owner), OWNER_SAMPLER, OWNER_NONE);
 }
 
 static int enable_monitoring_ibs(void)
@@ -825,47 +447,64 @@ static void disable_monitoring_ibs(void)
 }
 
 
-int monitor_hotlist_setsize(unsigned long size)
-{
-    int restart = monitoring_started;
-    
-    stop_monitoring();
-    hotlist_size = size;
-    
-    if ( restart )
-        return start_monitoring();
-    return 0;
-}
-
-void monitor_hotlist_setparm(unsigned int score_enter, unsigned int score_incr,
-                             unsigned int score_decr, unsigned int score_max)
-{
-    hotlist_score_enter = score_enter;
-    hotlist_score_incr = score_incr;
-    hotlist_score_decr = score_decr;
-    hotlist_score_max = score_max;
-}
-
-
-int monitor_migration_setsize(unsigned long size)
+int monitor_migration_settracked(unsigned long tracked)
 {
     int restart = monitoring_started;
 
     stop_monitoring();
-    migrator_size = size;
+    monitor_tracked = tracked;
 
     if ( restart )
         return start_monitoring();
     return 0;
 }
 
-void monitor_migration_setparm(unsigned long cooldown,
-			       unsigned int min_local_score,
-			       unsigned int min_local_rate)
+int monitor_migration_setcandidate(unsigned long candidate)
 {
-    migrator_cooldown = cooldown;
-    migrator_lcscore = min_local_score;
-    migrator_lcrate = min_local_rate;
+    int restart = monitoring_started;
+
+    stop_monitoring();
+    monitor_candidate = candidate;
+
+    if ( restart )
+        return start_monitoring();
+    return 0;
+}
+
+int monitor_migration_setenqueued(unsigned long enqueued)
+{
+    int restart = monitoring_started;
+
+    stop_monitoring();
+    monitor_enqueued = enqueued;
+
+    if ( restart )
+        return start_monitoring();
+    return 0;
+}
+
+int monitor_migration_setscores(unsigned int enter, unsigned int increment,
+                                unsigned int decrement, unsigned int maximum)
+{
+    monitor_enter = enter;
+    monitor_increment = increment;
+    monitor_decrement = decrement;
+    monitor_maximum = maximum;
+    return 0;
+}
+
+int monitor_migration_setcriterias(unsigned int min_node_score,
+                                   unsigned int min_node_rate)
+{
+    monitor_min_node_score = min_node_score;
+    monitor_min_node_rate = min_node_rate;
+    return 0;
+}
+
+int monitor_migration_setrules(unsigned int maxtries)
+{
+    monitor_maxtries = maxtries;
+    return 0;
 }
 
 
@@ -873,32 +512,31 @@ int start_monitoring(void)
 {
     if ( monitoring_started )
         return -1;
-
     reset_stats();
 
-    if ( alloc_info_buffer() != 0 )
+    if ( alloc_migration_queue() != 0 )
         goto err;
-    if ( alloc_hotlist() != 0 )
-        goto err_ibuf;
+    if ( alloc_migration_engine(monitor_tracked, monitor_candidate,
+                                monitor_enqueued) != 0 )
+        goto err_queue;
 
-    init_info_buffer();
-    init_hotlist();
+    init_migration_queue();
+    init_migration_engine();
 
     if ( ibs_capable() && enable_monitoring_ibs() == 0 )
         goto out;
     if ( pebs_capable() && enable_monitoring_pebs() == 0 )
         goto out;
-    goto err_hlst;
+    goto err_engine;
 
 out:
     monitoring_started = 1;
     stats_start();
     return 0;
-err_hlst:
-    printk("Cannot find monitoring facility\n");
-    free_hotlist();
-err_ibuf:
-    free_info_buffer();
+err_engine:
+    free_migration_engine();
+err_queue:
+    free_migration_queue();
 err:
     return -1;
 }
@@ -914,10 +552,10 @@ void stop_monitoring(void)
     else if ( pebs_capable() )
         disable_monitoring_pebs();
 
-    free_hotlist();
-    free_info_buffer();
-
     monitoring_started = 0;
+
+    free_migration_engine();
+    free_migration_queue();
 
     display_stats();
 }

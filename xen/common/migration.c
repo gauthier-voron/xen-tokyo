@@ -1,6 +1,7 @@
 #include <xen/hotlist.h>
 #include <xen/migration.h>
 #include <xen/mm.h>
+#include <xen/numa.h>
 #include <xen/rbtree.h>
 #include <xen/sort.h>
 
@@ -27,31 +28,144 @@ struct heap_slot
 };
 
 
+/* the hotlist of each cpu tracking page accesses */
 static DEFINE_PER_CPU(struct hotlist, hotlist);
 
+/*
+ * a maximum heap for the hotlist sorted with the score of the not yet
+ * processed hottest entry of the list
+ */
 static struct heap_slot hotlist_heap[NR_CPUS];
 
+/* the size of the heap: count of remaining list */
 static unsigned long hotlist_heap_size;
 
 
+/* the memory pool of candidates to migration */
 static struct migration_candidate *pool;
 
+/* the size of the memory pool */
 static unsigned long pool_capacity;
 
+/* the actually used entry count in the memory pool */
 static unsigned long pool_size;
 
+/* the root of the candidate tree over the candidates int the memory pool */
 static struct rb_root candidate_tree;
 
 
+/* the migration buffer of the engine */
 static struct migration_buffer buffer;
 
+/* the migration buffer size */
 static unsigned long buffer_capacity;
 
+/* the minimum rate required to migrate */
 static unsigned int minimum_rate;
 
+/* the minimum score required to migrate */
 static unsigned char minimum_score;
 
+/* a flag indicating the hotlists need to be flushed after a refill */
 static unsigned char flush_after_refill;
+
+
+#ifdef BIGOS_STATS
+
+static void stats_print_hotlists_quartiles(void)
+{
+    int cpu;
+    struct hotlist *list;
+    struct hotlist_entry *entry;
+    unsigned long index, size;
+    unsigned int minimum;
+    unsigned int lowquart;
+    unsigned int median;
+    unsigned int hightquart;
+    unsigned int maximum;
+
+    for_each_online_cpu ( cpu )
+    {
+        list = &per_cpu(hotlist, cpu);
+        entry = hottest_entry(list);
+        size = 0;
+
+        while ( entry != NULL )
+        {
+            size++;
+            entry = cooler_entry(list, entry);
+        }
+
+        minimum = 0;
+        lowquart = 0;
+        median = 0;
+        hightquart = 0;
+        maximum = 0;
+
+        entry = hottest_entry(list);
+        index = 0;
+
+        while ( entry != NULL )
+        {
+            if ( index == size-1 )
+                minimum = entry_score(list, entry);
+            if ( index == (size / 4) * 3 )
+                lowquart = entry_score(list, entry);
+            if ( index == size / 2 )
+                median = entry_score(list, entry);
+            if ( index == size / 4 )
+                hightquart = entry_score(list, entry);
+            if ( index == 0 )
+                maximum = entry_score(list, entry);
+
+            index++;
+            entry = cooler_entry(list, entry);
+        }
+
+        if ( minimum != 0 && maximum != 0 )
+            printk("hotlist[%2d] :: %u -- %u [ %u ] %u -- %u\n",
+                   cpu, minimum, lowquart, median, hightquart, maximum);
+    }
+}
+
+static void stats_print_pool_quartiles(void)
+{
+    unsigned int minimum;
+    unsigned int lowquart;
+    unsigned int median;
+    unsigned int hightquart;
+    unsigned int maximum;
+
+    if ( pool_size == 0 )
+        return;
+
+    minimum = pool[pool_size - 1].score;
+    lowquart = pool[(pool_size / 4) * 3].score;
+    median = pool[pool_size / 2].score;
+    hightquart = pool[pool_size / 4].score;
+    maximum = pool[0].score;
+
+    if ( minimum != 0 && maximum != 0 )
+        printk("pool scores :: %u -- %u [ %u ] %u -- %u\n",
+               minimum, lowquart, median, hightquart, maximum);
+
+    minimum = pool[pool_size - 1].rate;
+    lowquart = pool[(pool_size / 4) * 3].rate;
+    median = pool[pool_size / 2].rate;
+    hightquart = pool[pool_size / 4].rate;
+    maximum = pool[0].rate;
+
+    if ( minimum != 0 && maximum != 0 )
+        printk("pool rates  :: %u -- %u [ %u ] %u -- %u\n",
+               minimum, lowquart, median, hightquart, maximum);
+}
+
+#else
+
+#define stats_print_hotlists_quartiles()     {}
+#define stats_print_pool_quartiles()         {}
+
+#endif
 
 
 /*
@@ -173,7 +287,7 @@ void init_migration_engine(void)
 
     for_each_online_cpu ( cpu )
         init_hotlist(&per_cpu(hotlist, cpu));
-    
+
     buffer.size = 0;
 
     param_migration_engine(DEFAULT_MINIMUM_RATE, DEFAULT_MINIMUM_SCORE,
@@ -206,7 +320,7 @@ void free_migration_engine(void)
 
     free_buffer();
     free_candidate_pool();
-    
+
     for_each_online_cpu ( cpu )
         free_hotlist(&per_cpu(hotlist, cpu));
 }
@@ -220,6 +334,7 @@ void register_page_access(unsigned long pgid)
 void register_page_access_cpu(unsigned long pgid, int cpu)
 {
     touch_entry(&per_cpu(hotlist, cpu), pgid);
+    gc_entries(&per_cpu(hotlist, cpu));
 }
 
 void register_page_moved(unsigned long pgid)
@@ -289,7 +404,7 @@ static void decrease_hotlist_heap(void)
     while ( (l = HEAP_LEFT(i)) <= hotlist_heap_size )
     {
         cur = entry_score(arr[i].list, arr[i].entry);
-        
+
         if ( (r = HEAP_RIGHT(i)) <= hotlist_heap_size )
         {
             sl = entry_score(arr[l].list, arr[l].entry);
@@ -342,9 +457,9 @@ static void init_hotlist_heap(void)
 static void pop_hotlist_heap(void)
 {
     struct heap_slot *slot = &hotlist_heap[0];
-    
+
     slot->entry = cooler_entry(slot->list, slot->entry);
-    
+
     if ( slot->entry == NULL )
     {
         hotlist_heap_size--;
@@ -356,10 +471,15 @@ static void pop_hotlist_heap(void)
 }
 
 
+/*
+ * Initialize the candidate tree and memory pool.
+ * The candidate tree become an empty tree and every candidates in the pool is
+ * cleaned.
+ */
 static void init_candidate_tree(void)
 {
     unsigned long i;
-    
+
     candidate_tree = RB_ROOT;
 
     for (i=0; i<pool_capacity; i++)
@@ -368,6 +488,14 @@ static void init_candidate_tree(void)
     pool_size = 0;
 }
 
+/*
+ * Allocate a candidate from unused entries in the candidate memory pool, then
+ * set the candidate pgid accordingly to the specified one.
+ * This function assume les than pool_capacity candidates have been allocated.
+ * There is no free_candidate() function, except init_candidate_tree() which
+ * free every allocated candidates.
+ * Return the newly allocated candidate.
+ */
 static struct migration_candidate *alloc_candidate(unsigned long pgid)
 {
     struct migration_candidate *new = &pool[pool_size];
@@ -376,11 +504,20 @@ static struct migration_candidate *alloc_candidate(unsigned long pgid)
     new->dest = 0;
     new->score = 0;
     new->rate = 0;
-    
+
     pool_size++;
     return new;
 }
 
+/*
+ * Find a candidate in the candidate tree, searching with its pgid.
+ * If the searched candidate is not in the candidate tree, return the parent
+ * the searched candidate should be inserted below, or NULL if the candidate
+ * tree is empty.
+ * The user can know the searched candidate has been found by checking if it
+ * is not NULL and comparing the returned candidate pgid with the looked for
+ * one.
+ */
 static struct migration_candidate *find_candidate(unsigned long pgid)
 {
     struct rb_node *node = candidate_tree.rb_node;
@@ -401,6 +538,15 @@ static struct migration_candidate *find_candidate(unsigned long pgid)
     return candidate;
 }
 
+/*
+ * Collect informations about the specified candidate across all the hotlists.
+ * The informations are, for the node with the maximum access rate: the score
+ * and the access rate of this node.
+ * The score is the sum of the scores of every cpus in this node, and the rate
+ * is a percentage of this score compared to the percentage of the other nodes
+ * score.
+ * These informations are set in the candidate structure.
+ */
 static void inquire_candidate(struct migration_candidate *candidate)
 {
     int cpu, node, max_node = -1;
@@ -413,22 +559,22 @@ static void inquire_candidate(struct migration_candidate *candidate)
         scores[cpu] = 0;
 
     candidate->dest = 0;
-    
+
     for_each_online_cpu ( cpu )
     {
         list = &per_cpu(hotlist, cpu);
         entry = pgid_entry(list, candidate->pgid);
         if ( entry == NULL )
             continue;
-        
-        node = cpu; /* TODO: change */
+
+        node = cpu_to_node(cpu);
         tmp = entry_score(list, entry);
 
         if ( max_node == -1 )
             candidate->dest = node;
         if ( node > max_node )
             max_node = node;
-        
+
         total += tmp;
         scores[node] += tmp;
         if ( scores[node] > scores[candidate->dest] )
@@ -442,6 +588,13 @@ static void inquire_candidate(struct migration_candidate *candidate)
     candidate->rate = (unsigned char) ((ulong * 100) / total);
 }
 
+/*
+ * Insert a new candidate in the candidate tree, which is indexed by the pgid.
+ * The new candidate is inserted as the child of the specified parent
+ * candidate which should be obtained with find_candidate().
+ * Be carefull to not rebalance the tree between the call to find_candidate()
+ * and the call to insert_candidate(), otherwise, the tree may be corrupted.
+ */
 static void insert_candidate(struct migration_candidate *parent,
                              struct migration_candidate *new)
 {
@@ -465,11 +618,18 @@ static void insert_candidate(struct migration_candidate *parent,
     rb_insert_color(&new->node, &candidate_tree);
 }
 
+/*
+ * Update the candidate tree, and the candidate pool, accordingly to the
+ * hotlist content.
+ * The candidates inserted in the tree are, the entries of the lists having the
+ * best score. If an entry is present in more than one list, it is inseted
+ * only once.
+ */
 static void refill_candidate_tree(void)
 {
     unsigned long i, pgid;
     struct migration_candidate *candidate, *parent;
-    
+
     init_hotlist_heap();
     init_candidate_tree();
 
@@ -492,27 +652,46 @@ static void refill_candidate_tree(void)
     }
 }
 
+/*
+ * Compare two candidates besing on their rate then score.
+ * Return a negative number if _a is more interesting to migrate than _b.
+ * Return a positive number if _b is more interesting to migrate than _a.
+ */
 static int compare_candidates(const void *_a, const void *_b)
 {
     struct migration_candidate *a = (struct migration_candidate *) _a;
     struct migration_candidate *b = (struct migration_candidate *) _b;
-    int a_valid_score = a->score >= minimum_score;
-    int b_valid_score = b->score >= minimum_score;
-    
-    if ( a_valid_score != b_valid_score )
-        return b_valid_score - a_valid_score;
-    
-    return b->rate - a->rate;
+
+    if ( a->rate != b->rate )
+        return b->rate - a->rate;
+    return b->score - a->score;
 }
 
+/*
+ * Flush every cpu hotlist.
+ */
+static void flush_hotlists(void)
+{
+    int cpu;
+
+    for_each_online_cpu ( cpu )
+    {
+        flush_entries(&per_cpu(hotlist, cpu));
+        gc_entries(&per_cpu(hotlist, cpu));
+    }
+}
 
 struct migration_buffer *refill_migration_buffer(void)
 {
     unsigned long i;
-    
+
+    stats_print_hotlists_quartiles();
+
     refill_candidate_tree();
     sort(pool, pool_size, sizeof(struct migration_candidate),
          compare_candidates, NULL);
+
+    stats_print_pool_quartiles();
 
     buffer.size = 0;
     for (i=0; i<pool_size; i++)
@@ -520,15 +699,18 @@ struct migration_buffer *refill_migration_buffer(void)
         if ( buffer.size >= buffer_capacity )
             break;
         if ( pool[i].score < minimum_score )
-            break;
+            continue;
         if ( pool[i].rate < minimum_rate )
             break;
-        
+
         buffer.migrations[buffer.size].pgid = pool[i].pgid;
         buffer.migrations[buffer.size].node = pool[i].dest;
         buffer.size++;
     }
-    
+
+    if ( flush_after_refill )
+        flush_hotlists();
+
 	return &buffer;
 }
 

@@ -42,6 +42,7 @@ static unsigned int   monitor_decrement = BIGOS_MONITOR_DECREMENT;
 static unsigned int   monitor_maximum = BIGOS_MONITOR_MAXIMUM;
 static unsigned int   monitor_min_node_score = BIGOS_MONITOR_MIN_NODE_SCORE;
 static unsigned int   monitor_min_node_rate = BIGOS_MONITOR_MIN_NODE_RATE;
+static unsigned char  monitor_flush_after_refill = BIGOS_MONITOR_FLUSH;
 static unsigned int   monitor_maxtries = BIGOS_MONITOR_MAXTRIES;
 
 
@@ -67,6 +68,7 @@ static unsigned long    decision_count = 0;        /* # decision process */
 static unsigned long    migration_planned = 0;     /* # page in info_buffer */
 static unsigned long    migration_tries = 0;       /* # memory_move call */
 static unsigned long    migration_succeed = 0;     /* # memory_move return 0 */
+static unsigned long    migration_aborted = 0;     /* # maxtries cancel */
 
 static void reset_stats(void)
 {
@@ -86,6 +88,7 @@ static void reset_stats(void)
     migration_planned = 0;
     migration_tries = 0;
     migration_succeed = 0;
+    migration_aborted = 0;
     stats_start = 0;
     stats_end = 0;
 }
@@ -118,6 +121,9 @@ static void reset_stats(void)
 
 #define stats_account_migration_plan()          \
     migration_planned++
+
+#define stats_account_migration_abort()          \
+    migration_aborted++
 
 #define stats_account_migration_try(ret)            \
     migration_tries++, migration_succeed += (!(ret))
@@ -164,6 +170,7 @@ static void display_stats(void)
     printk("migration planned            %lu\n", migration_planned);
     printk("migration tries              %lu\n", migration_tries);
     printk("migration succeed            %lu\n", migration_succeed);
+    printk("migration aborted            %lu\n", migration_aborted);
     printk("\n");
 
     MIN_MAX_AVG(sampling_total_time, min, max, avg);
@@ -188,6 +195,7 @@ static void display_stats(void)
 #define stats_start_migration()            {}
 #define stats_stop_migration()             {}
 #define stats_account_migration_plan()     {}
+#define stats_account_migration_abort()    {}
 #define stats_account_migration_try(ret)   {}
 #define display_stats()                    {}
 
@@ -222,7 +230,7 @@ static void free_migration_queue(void)
     if ( migration_queue == NULL )
         return;
 	order = get_order_from_bytes(size * sizeof(struct hotlist_entry));
-    
+
 	free_xenheap_pages(migration_queue, order);
     migration_queue = NULL;
 }
@@ -246,6 +254,9 @@ static void fill_migration_queue(struct migration_buffer *buffer)
 
         if ( j != monitor_enqueued )         /* entry already present */
             continue;
+
+        stats_account_migration_plan();
+
         if ( slot == monitor_enqueued )      /* no more empty slot */
             break;
 
@@ -260,6 +271,7 @@ static void fill_migration_queue(struct migration_buffer *buffer)
 static void drain_migration_queue(void)
 {
     unsigned long i;
+    unsigned long nid;
     int ret;
 
     for (i=0; i<monitor_enqueued; i++)
@@ -267,17 +279,32 @@ static void drain_migration_queue(void)
         if ( migration_queue[i].mfn == INVALID_MFN )
             continue;
 
-        if ( migration_queue[i].gfn == INVALID_GFN )
+        nid = phys_to_nid(migration_queue[i].mfn << PAGE_SHIFT);
+        if ( migration_queue[i].node == nid )
         {
-            if ( ++migration_queue[i].tries >= monitor_maxtries )
-                migration_queue[i].mfn = INVALID_MFN;
+            register_page_moved(migration_queue[i].mfn);
+            migration_queue[i].mfn = INVALID_MFN;
             continue;
         }
 
+        if ( migration_queue[i].gfn == INVALID_GFN )
+        {
+            if ( ++migration_queue[i].tries >= monitor_maxtries )
+            {
+                migration_queue[i].mfn = INVALID_MFN;
+                stats_account_migration_abort();
+            }
+            continue;
+        }
+
+        stats_start_migration();
         ret = memory_move(migration_queue[i].domain, migration_queue[i].gfn,
                           migration_queue[i].node);
+        stats_stop_migration();
+
         stats_account_migration_try(ret);
         register_page_moved(migration_queue[i].mfn);
+        migration_queue[i].mfn = INVALID_MFN;
     }
 }
 
@@ -294,9 +321,7 @@ int decide_migration(void)
                         OWNER_DECIDER) != OWNER_NONE )
             ;
 
-    stats_start_migration();
     drain_migration_queue();
-    stats_stop_migration();
 
     stats_start_decision();
     buffer = refill_migration_buffer();
@@ -411,7 +436,7 @@ static void ibs_nmi_handler(struct ibs_record *record)
         ogfn = INVALID_GFN;
 
         if ( cmpxchg(&migration_queue[i].gfn, ogfn, gfn) != ogfn )
-            break;
+            continue;
         migration_queue[i].domain = current->domain;
     }
 
@@ -433,7 +458,7 @@ static int enable_monitoring_ibs(void)
         return ret;
 
     ibs_setevent(IBS_EVENT_OP);
-    ibs_setrate(0x10000000);
+    ibs_setrate(0x1000000);
     ibs_sethandler(ibs_nmi_handler);
     ibs_enable();
 
@@ -490,14 +515,25 @@ int monitor_migration_setscores(unsigned int enter, unsigned int increment,
     monitor_increment = increment;
     monitor_decrement = decrement;
     monitor_maximum = maximum;
+
+    if ( monitoring_started )
+        param_migration_lists(enter, increment, decrement, maximum);
+
     return 0;
 }
 
 int monitor_migration_setcriterias(unsigned int min_node_score,
-                                   unsigned int min_node_rate)
+                                   unsigned int min_node_rate,
+                                   unsigned char flush_after_refill)
 {
     monitor_min_node_score = min_node_score;
     monitor_min_node_rate = min_node_rate;
+    monitor_flush_after_refill = flush_after_refill;
+
+    if ( monitoring_started )
+        param_migration_engine(min_node_score, min_node_rate,
+                               flush_after_refill);
+
     return 0;
 }
 
@@ -523,6 +559,11 @@ int start_monitoring(void)
     init_migration_queue();
     init_migration_engine();
 
+    param_migration_lists(monitor_enter, monitor_increment,
+                          monitor_decrement, monitor_maximum);
+    param_migration_engine(monitor_min_node_rate, monitor_min_node_score,
+                           monitor_flush_after_refill);
+
     if ( ibs_capable() && enable_monitoring_ibs() == 0 )
         goto out;
     if ( pebs_capable() && enable_monitoring_pebs() == 0 )
@@ -546,7 +587,7 @@ void stop_monitoring(void)
     if ( !monitoring_started )
         return;
     stats_end();
-    
+
     if ( ibs_capable() )
         disable_monitoring_ibs();
     else if ( pebs_capable() )

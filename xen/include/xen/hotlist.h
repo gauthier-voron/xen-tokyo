@@ -98,6 +98,13 @@ void forget_entry(struct hotlist *list, unsigned long pgid);
  */
 void flush_entries(struct hotlist *list);
 
+/*
+ * Garbage collect every entries in the list with a score of 0.
+ * This call can takes time if there is many such entries, but may speed up
+ * future calls to touch_entry() and pgid_entry().
+ */
+void gc_entries(struct hotlist *list);
+
 
 /*
  * Return the entry of the specified hotlist which has the specified pgid.

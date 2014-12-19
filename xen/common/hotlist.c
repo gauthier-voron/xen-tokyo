@@ -33,7 +33,7 @@ int alloc_hotlist(struct hotlist *list, unsigned long size)
     order = allocation_order(size * sizeof(struct hotlist_entry));
     list->size = 0;
 	list->pool = alloc_xenheap_pages(order, 0);
-    
+
 	if ( list->pool != NULL )
 		list->size = size;
 	else
@@ -45,7 +45,7 @@ int alloc_hotlist(struct hotlist *list, unsigned long size)
 void init_hotlist(struct hotlist *list)
 {
     unsigned long i;
-    
+
 	list->score = 0;
     INIT_LIST_HEAD(&list->free);
     INIT_LIST_HEAD(&list->list);
@@ -78,7 +78,7 @@ void free_hotlist(struct hotlist *list)
     if ( list->size == 0 )
         return;
 	order = allocation_order(list->size * sizeof(struct hotlist_entry));
-    
+
 	free_xenheap_pages(list->pool, order);
     list->size = 0;
 }
@@ -131,7 +131,7 @@ static void free_hotlist_entry(struct hotlist *list,
 static void ensure_freelist_not_empty(struct hotlist *list)
 {
     struct hotlist_entry *last;
-    
+
     if ( !list_empty(&list->free) )
         return;
 
@@ -159,7 +159,7 @@ static void ensure_no_overflow(struct hotlist *list)
      * We always substract at least 1 to handle cases where
      * list->decrement == 0 or list->maximum == 0
      */
-    
+
     if ( list->score >= ((unsigned int) (0 - 1 - list->decrement)) )
         need++;
     if ( list->score >= ((unsigned int) (0 - 1 - list->maximum)) )
@@ -266,11 +266,11 @@ static void insert_list_entry(struct hotlist *list,
 {
     struct list_head *cur;
     unsigned int score = new->score;
-    
+
     list_for_each(cur, &list->list)
         if ( container_of(cur, struct hotlist_entry, list)->score <= score )
             break;
-    
+
     list_add_tail(&new->list, cur);
 }
 
@@ -283,7 +283,7 @@ void touch_entry(struct hotlist *list, unsigned long pgid)
 
     list->score += list->decrement;
     ensure_no_overflow(list);
-    
+
     if ( found == NULL || found->pgid != pgid )
     {
         parent = found;
@@ -293,7 +293,7 @@ void touch_entry(struct hotlist *list, unsigned long pgid)
          * Here, the newly allocated found entry is not in the freelist but
          * not yet in the hotlist or in the rbtree.
          */
-        
+
         insert_tree_entry(list, found, parent);
 
         /*
@@ -303,7 +303,7 @@ void touch_entry(struct hotlist *list, unsigned long pgid)
          * Because the hotlist has at least a size of two, we know this is
          * always true.
          */
-        
+
         ensure_freelist_not_empty(list);
 
         found->score = list->score + list->insertion;
@@ -321,12 +321,12 @@ void touch_entry(struct hotlist *list, unsigned long pgid)
 
         ceil = list->score + list->maximum;
         add = list->increment + list->decrement;
-        
+
         if ( likely(ceil > add) && (found->score > ceil - add) )
             found->score = ceil;
         else
             found->score += add;
-        
+
         moveup_list_entry(list, found);
     }
 }
@@ -350,6 +350,21 @@ void flush_entries(struct hotlist *list)
     ensure_no_overflow(list);
 }
 
+void gc_entries(struct hotlist *list)
+{
+    struct hotlist_entry *entry;
+
+    while ( !list_empty(&list->list) )
+    {
+        entry = container_of(list->list.prev, struct hotlist_entry, list);
+        if ( entry->score > list->score )
+            break;
+
+        prefetch(entry->list.prev);
+        free_hotlist_entry(list, entry);
+    }
+}
+
 
 struct hotlist_entry *pgid_entry(struct hotlist *list, unsigned long pgid)
 {
@@ -369,7 +384,7 @@ struct hotlist_entry *hottest_entry(struct hotlist *list)
         entry = container_of(list->list.next, struct hotlist_entry, list);
         prefetch(entry->list.next);
     }
-    
+
     return entry;
 }
 
@@ -383,7 +398,7 @@ struct hotlist_entry *cooler_entry(struct hotlist *list,
         next = container_of(entry->list.next, struct hotlist_entry, list);
         prefetch(next->list.next);
     }
-    
+
     return next;
 }
 

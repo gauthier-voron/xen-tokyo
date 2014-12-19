@@ -3,62 +3,58 @@
 
 
 /*
- * Set the hotlist size. The specified size is the amount of page which can
- * be handled as hot pages for each cpus.
- * Changing the size of the hotlist cause the monitoring to stop and restart.
+ * Set the amount of pages which can be tracked for access simultaneously on
+ * a given cpu.
  * Return 0 in case of success.
  */
-int monitor_hotlist_setsize(unsigned long size);
-
-/*
- * Set the parameters for the hotlist accounting. The score_enter is the score
- * of a page which is inserted on the hotlist. The score_incr is the score
- * a page in the list gain when it is acceeded. The score_decr is the score
- * each page loose when a page is acceeded. The score_max is the maximum
- * local score a page can reach.
- */
-void monitor_hotlist_setparm(unsigned int score_enter, unsigned int score_incr,
-			     unsigned int score_decr, unsigned int score_max);
-
-
-/*
- * Set the maximum amount of page which can be moved at each migration phase.
- * Changing this size cause the monitoring to stop and restart.
- * Return 0 in case of success.
- */
-int monitor_migration_setsize(unsigned long size);
-
-/*
- * Set the parameters of the migration phases. The cooldown is the minimum
- * amount of millisecond separating each migration phase. The min_local_score
- * is the minimum score a page have to reach in one of the cpu of the candidate
- * destination node to be moved. The min_local_rate is the minimum percentage
- * of access from the candidate node to be moved.
- */
-void monitor_migration_setparm(unsigned long cooldown,
-			       unsigned int min_local_score,
-			       unsigned int min_local_rate);
-
-
-
-
-
 int monitor_migration_settracked(unsigned long tracked);
 
+/*
+ * Set the amount of pages which can be inquired for migration across all the
+ * cpus.
+ * Return 0 in case of success.
+ */
 int monitor_migration_setcandidate(unsigned long candidate);
 
+/*
+ * Set the amount of pages which can be enqueued for migration waiting to get
+ * migration-specific informations.
+ * Return 0 in case of success.
+ */
 int monitor_migration_setenqueued(unsigned long enqueued);
 
+/*
+ * Set the hotlists score parameters for page migrations.
+ * See param_migration_lists() in xen/migration.h for more details.
+ * Return 0 in case of success.
+ */
 int monitor_migration_setscores(unsigned int enter, unsigned int increment,
 				unsigned int decrement, unsigned int maximum);
 
+/*
+ * Set the migration engine score parameters for page migrations.
+ * See param_migration_engine() un xen/migration.h for more details.
+ * Return 0 in case of success.
+ */
 int monitor_migration_setcriterias(unsigned int min_node_score,
-				   unsigned int min_node_rate);
+				   unsigned int min_node_rate,
+				   unsigned char flush_after_refill);
 
+/*
+ * Set the amount of migration decision a given page can stay in the migration
+ * queue without the migration be aborted.
+ * Return 0 in case of success.
+ */
 int monitor_migration_setrules(unsigned int maxtries);
 
 
-
+/*
+ * Perform a decision about what page to migrate and place these pages in a
+ * migration queue.
+ * Also do migrate the pages in the migration queues which are ready to be
+ * migrated.
+ * Return 0 in case of success.
+ */
 int decide_migration(void);
 
 /*

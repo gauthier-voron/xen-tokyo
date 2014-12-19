@@ -115,4 +115,20 @@
 /* Enable performance counting */
 #define BIGOS_PERF_COUNTING
 
+/* Enable statistics over monitoring && migration */
+#define BIGOS_STATS
+
+/* Count of hot page per pcpu (consume 8 bytes per page) */
+#define BIGOS_MONITOR_TRACKED              512
+#define BIGOS_MONITOR_CANDIDATE             32
+#define BIGOS_MONITOR_ENQUEUED               4
+#define BIGOS_MONITOR_ENTER                  8
+#define BIGOS_MONITOR_INCREMENT              8
+#define BIGOS_MONITOR_DECREMENT              1
+#define BIGOS_MONITOR_MAXIMUM             1024
+#define BIGOS_MONITOR_MIN_NODE_SCORE       256
+#define BIGOS_MONITOR_MIN_NODE_RATE         90
+#define BIGOS_MONITOR_FLUSH                  0
+#define BIGOS_MONITOR_MAXTRIES               4
+
 #endif /* __XEN_CONFIG_H__ */

@@ -237,6 +237,7 @@ void __init do_initcalls(void)
 #ifdef BIGOS_PERF_COUNTING
 #  define HYPERCALL_BIGOS_PERF_ENABLE   -7
 #  define HYPERCALL_BIGOS_PERF_DISABLE  -8
+#  define HYPERCALL_BIGOS_DECIDE_MIGR   -9
 #endif
 
 
@@ -511,15 +512,47 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 #ifdef BIGOS_PERF_COUNTING
     case HYPERCALL_BIGOS_PERF_ENABLE:
     {
+        unsigned long arr[11];
+        unsigned long tracked, candidate, enqueued;
+        unsigned long enter, increment, decrement, maximum;
+        unsigned long min_score, min_rate, flush, maxtries;
+
+        if ( !copy_from_guest(&arr, arg, 11) )
+        {
+            tracked = arr[0];
+            candidate = arr[1];
+            enqueued = arr[2];
+            enter = arr[3];
+            increment = arr[4];
+            decrement = arr[5];
+            maximum = arr[6];
+            min_score = arr[7];
+            min_rate = arr[8];
+            flush = arr[9];
+            maxtries = arr[10];
+
+            monitor_migration_settracked(tracked);
+            monitor_migration_setcandidate(candidate);
+            monitor_migration_setenqueued(enqueued);
+            monitor_migration_setscores(enter, increment, decrement, maximum);
+            monitor_migration_setcriterias(min_score, min_rate, flush);
+            monitor_migration_setrules(maxtries);
+        }
+
         printk("Enabling perf counting\n");
-        return enable_monitoring();
+        return start_monitoring();
     }
 
     case HYPERCALL_BIGOS_PERF_DISABLE:
     {
         printk("Disable perf counting\n");
-        disable_monitoring();
+        stop_monitoring();
         return 0;
+    }
+
+    case HYPERCALL_BIGOS_DECIDE_MIGR:
+    {
+        return decide_migration();
     }
 #endif /* BIGOS_PERF_COUNTING */
 

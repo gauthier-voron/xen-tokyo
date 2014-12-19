@@ -18,10 +18,10 @@ static int ibs_acquired = 0;
 
 static int ibs_enabled = 0;
 
-static void (*ibs_handler)(struct ibs_record *record, int cpu) = NULL;
+static void (*ibs_handler)(struct ibs_record *record) = NULL;
 
 
-int nmi_ibs(int cpu)
+int nmi_ibs(void)
 {
     u64 val;
     int ret = 0;
@@ -43,7 +43,7 @@ int nmi_ibs(int cpu)
         }
 
         if ( ibs_handler )
-            ibs_handler(&record, cpu);
+            ibs_handler(&record);
         val &= ~(IBS_FETCH_VAL | IBS_FETCH_CNT);
         wrmsr_safe(MSR_AMD64_IBSFETCHCTL, val);
         ret = 1;
@@ -77,7 +77,7 @@ int nmi_ibs(int cpu)
         }
 
         if ( ibs_handler )
-            ibs_handler(&record, cpu);
+            ibs_handler(&record);
         val &= ~(IBS_OP_VAL | IBS_OP_CNT);
         wrmsr_safe(MSR_AMD64_IBSOPCTL, val);
         ret = 1;
@@ -142,7 +142,7 @@ int ibs_setrate(unsigned long rate)
     return 0;
 }
 
-int ibs_sethandler(void (*handler)(struct ibs_record *record, int cpu))
+int ibs_sethandler(void (*handler)(struct ibs_record *record))
 {
     if ( !ibs_acquired )
         return -1;

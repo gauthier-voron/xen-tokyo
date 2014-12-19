@@ -1718,6 +1718,19 @@ unsigned long paging_gva_to_gfn(struct vcpu *v,
     return hostmode->gva_to_gfn(v, hostp2m, va, pfec);
 }
 
+unsigned long try_paging_gva_to_gfn(struct vcpu *v,
+                                    unsigned long va,
+                                    uint32_t *pfec)
+{
+    struct p2m_domain *hostp2m = p2m_get_hostp2m(v->domain);
+
+    if ( !p2m_read_trylock(hostp2m) )
+        return INVALID_GFN;
+    p2m_read_unlock(hostp2m);
+
+    return paging_gva_to_gfn(v, va, pfec);
+}
+
 /*** Audit ***/
 
 #if P2M_AUDIT

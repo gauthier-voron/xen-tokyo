@@ -1134,7 +1134,6 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
      */
 
     p2m->set_entry(p2m, gfn, _mfn(old_mfn), 0, p2m_ram_ro, p2m_access_rx);
-    flush_tlb_one_all(gfn);
 
     /*
      * Here, the content of the page can be read but not modified, so we can
@@ -1149,7 +1148,6 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
      */
 
     guest_physmap_add_page(d, gfn, new_mfn, 0);
-    flush_tlb_one_all(gfn);
 
     clear_memory_moved_gfn();          /* gfn is not fault protected anymore */
 

@@ -2571,9 +2571,11 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
 
             if ( (rdmsr_safe(regs->ecx, val) != 0) || (msr_content != val) )
         invalid:
+#ifndef BIGOS_PERF_COUNTING
                 gdprintk(XENLOG_WARNING, "Domain attempted WRMSR %p from "
                         "0x%016"PRIx64" to 0x%016"PRIx64".\n",
                         _p(regs->ecx), val, msr_content);
+#endif
             break;
         }
         break;
@@ -3309,7 +3311,7 @@ void do_nmi(const struct cpu_user_regs *regs)
 
     if ( pebs_capable() && nmi_pebs(cpu) )
         return;
-    if ( ibs_capable() && nmi_ibs(cpu) )
+    if ( ibs_capable() && nmi_ibs() )
         return;
 
     if ( nmi_callback(regs, cpu) )

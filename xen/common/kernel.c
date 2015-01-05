@@ -238,6 +238,7 @@ void __init do_initcalls(void)
 #  define HYPERCALL_BIGOS_PERF_ENABLE   -7
 #  define HYPERCALL_BIGOS_PERF_DISABLE  -8
 #  define HYPERCALL_BIGOS_DECIDE_MIGR   -9
+#  define HYPERCALL_BIGOS_PERFORM_MIGR  -10
 #endif
 
 
@@ -553,6 +554,11 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case HYPERCALL_BIGOS_DECIDE_MIGR:
     {
         return decide_migration();
+    }
+
+    case HYPERCALL_BIGOS_PERFORM_MIGR:
+    {
+        return perform_migration();
     }
 #endif /* BIGOS_PERF_COUNTING */
 

@@ -29,6 +29,7 @@ static DEFINE_PER_CPU(unsigned long, migration_engine_owner);
 #define OWNER_NONE      0
 #define OWNER_SAMPLER   1
 #define OWNER_DECIDER   2
+#define OWNER_MIGRATOR  3
 
 static struct migration_query *migration_queue;
 
@@ -59,6 +60,8 @@ static DEFINE_PER_CPU(unsigned long, sampling_count);  /* IBS/PEBS count    */
 static DEFINE_PER_CPU(s_time_t, sampling_total_time);  /* IBS/PEBS total ns */
 static DEFINE_PER_CPU(s_time_t, sampling_accounting_time);    /* hotlist ns */
 static DEFINE_PER_CPU(s_time_t, sampling_probing_time);/* info gathering ns */
+static DEFINE_PER_CPU(unsigned long, probing_count);       /* # pfn probing */
+
 
 static s_time_t         decision_total_time = 0;       /* planning time  ns */
 static s_time_t         listwalk_total_time = 0;       /* popping time   ns */
@@ -80,6 +83,7 @@ static void reset_stats(void)
         per_cpu(sampling_accounting_time, cpu) = 0;
         per_cpu(sampling_probing_time, cpu) = 0;
         per_cpu(sampling_count, cpu) = 0;
+        per_cpu(probing_count, cpu) = 0;
     }
     decision_count = 0;
     decision_total_time = 0;
@@ -105,7 +109,8 @@ static void reset_stats(void)
 #define stats_stop_accounting()                                         \
     this_cpu(sampling_accounting_time) += (NOW() - this_cpu(time_counter_1))
 
-#define stats_start_probing()      this_cpu(time_counter_1) = NOW()
+#define stats_start_probing()                   \
+    this_cpu(time_counter_1) = NOW(), this_cpu(probing_count)++
 #define stats_stop_probing()                                            \
     this_cpu(sampling_probing_time) += (NOW() - this_cpu(time_counter_1))
 
@@ -160,6 +165,8 @@ static void display_stats(void)
     printk("sampling total time          %lu/%lu/%lu ns\n", min, max, avg);
     MIN_MAX_AVG(sampling_accounting_time, min, max, avg);
     printk("sampling accounting time     %lu/%lu/%lu ns\n", min, max, avg);
+    MIN_MAX_AVG(probing_count, min, max, avg);
+    printk("sampling probing count       %lu/%lu/%lu ns\n", min, max, avg);
     MIN_MAX_AVG(sampling_probing_time, min, max, avg);
     printk("sampling probing time        %lu/%lu/%lu ns\n", min, max, avg);
     printk("\n");
@@ -182,7 +189,7 @@ static void display_stats(void)
 #else
 
 #define reset_stats()                      {}
-#define sstats_tart()                      {}
+#define stats_start()                      {}
 #define stats_end()                        {}
 #define stats_start_sampling()             {}
 #define stats_stop_sampling()              {}
@@ -321,8 +328,6 @@ int decide_migration(void)
                         OWNER_DECIDER) != OWNER_NONE )
             ;
 
-    drain_migration_queue();
-
     stats_start_decision();
     buffer = refill_migration_buffer();
     fill_migration_queue(buffer);
@@ -330,6 +335,23 @@ int decide_migration(void)
 
     for_each_online_cpu ( cpu )
         cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_DECIDER,
+                OWNER_NONE);
+    return 0;
+}
+
+int perform_migration(void)
+{
+    int cpu;
+
+    for_each_online_cpu ( cpu )
+        while ( cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_NONE,
+                        OWNER_MIGRATOR) != OWNER_NONE )
+            ;
+
+    drain_migration_queue();
+
+    for_each_online_cpu ( cpu )
+        cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_MIGRATOR,
                 OWNER_NONE);
     return 0;
 }

@@ -11,18 +11,19 @@
 #include <xc_private.h>
 
 
-#define HYPERCALL_CMD_START_MONITORING   ((unsigned long) -7)
-#define HYPERCALL_CMD_STOP_MONITORING    ((unsigned long) -8)
-#define HYPERCALL_CMD_DO_MIGRATION       ((unsigned long) -9)
+#define HYPERCALL_CMD_START_MONITORING   ((unsigned long)  -7)
+#define HYPERCALL_CMD_STOP_MONITORING    ((unsigned long)  -8)
+#define HYPERCALL_CMD_DECIDE_MIGR        ((unsigned long)  -9)
+#define HYPERCALL_CMD_PERFORM_MIGR       ((unsigned long) -10)
 
 
 static void usage(FILE *stream)
 {
-	fprintf(stream, "Usage: xen-automem [ option... ] interval\n"
+	fprintf(stream, "Usage: xen-automem [ option... ] decide [ perform ]\n"
 		"Communicate with Xen to perform memory migration accordingly "
 		"to the need of the\nrunning HVM guests. Communicate with Xen "
-		"throught hypercalls every specified\ninterval (in "
-		"milliseconds\n\n");
+		"throught hypercalls every specified\ninterval for decisions "
+		"and actual migrations (in milliseconds)\n\n");
 	fprintf(stream, "Options:\n  -h, -?, --help                   "
 		"display this help message, then exit\n"
 		"                                   immediately\n\n"
@@ -132,10 +133,11 @@ static void sighandler(int signum __attribute__((unused)))
 	continue_migration = 0;
 }
 
-static void perform_hypercalls(unsigned long *params, unsigned long interval)
+static void perform_hypercalls(unsigned long *params, unsigned long decide,
+			       unsigned long perform)
 {
 	int ret;
-	unsigned long now, goal;
+	unsigned long now, goal, goal_decide, goal_perform;
 	struct timespec ts;
 	struct sigaction sigact;
 
@@ -155,23 +157,43 @@ static void perform_hypercalls(unsigned long *params, unsigned long interval)
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 	now = ts.tv_sec * 1000 + ts.tv_nsec / 1000000ul;
-	goal = now;
+	goal_decide = now;
+	goal_perform = now;
 
 	while (continue_migration) {
 		clock_gettime(CLOCK_REALTIME, &ts);
 		now = ts.tv_sec * 1000 + ts.tv_nsec / 1000000ul;
 
-		while (goal <= now)
-			goal += interval;
+		if (goal_perform < now) {
+			if (hypercall(HYPERCALL_CMD_PERFORM_MIGR, NULL, &ret))
+				error("failed to communicate with Xen");
+			if (ret != 0)
+				break;
+		}
+
+		if (goal_decide < now) {
+			if (hypercall(HYPERCALL_CMD_DECIDE_MIGR, NULL, &ret))
+				error("failed to communicate with Xen");
+			if (ret != 0)
+				break;
+		}
+
+
+		clock_gettime(CLOCK_REALTIME, &ts);
+		now = ts.tv_sec * 1000 + ts.tv_nsec / 1000000ul;
+
+		while (goal_decide <= now)
+			goal_decide += decide;
+		while (goal_perform <= now)
+			goal_perform += perform;
+
+		goal = goal_perform;
+		if (goal_decide < goal)
+			goal = goal_decide;
 
 		ts.tv_sec = ((goal - now) / 1000);
 		ts.tv_nsec = ((goal - now) % 1000) * 1000000ul;
 		nanosleep(&ts, NULL);
-
-		if (hypercall(HYPERCALL_CMD_DO_MIGRATION, NULL, &ret) != 0)
-			error("failed to communicate with Xen");
-		if (ret != 0)
-			break;
 	}
 	
 	if (hypercall(HYPERCALL_CMD_STOP_MONITORING, NULL, &ret) != 0)
@@ -189,7 +211,7 @@ int main(int argc, char * const* argv)
 	unsigned long hotlist[4] = {8, 8, 1, 1024};
 	unsigned long migration[3] = {256, 90, 0};
 	unsigned long maxtries = 4;
-	unsigned long interval;
+	unsigned long decide, perform;
 	unsigned long hypercall_params[11];
 	
 	struct option options[] = {
@@ -263,9 +285,15 @@ int main(int argc, char * const* argv)
 	}
 
 	if (optind >= argc)
-		error("missing operand 'interval'");
-	if (parse_numbers(&interval, 1, argv[optind]) != 0 || interval == 0)
-		error("invalid operand 'interval': '%s'", argv[optind]);
+		error("missing operand 'decide'");
+	if (parse_numbers(&decide, 1, argv[optind]) != 0 || decide == 0)
+		error("invalid operand 'decide': '%s'", argv[optind]);
+
+	if (optind + 1 >= argc)
+		perform = decide;
+	else if (parse_numbers(&perform, 1, argv[optind+1]) != 0
+		 || perform == 0)
+		error("invalid operand 'perform': '%s'", argv[optind+1]);
 
 	hypercall_params[0]  = tracked;
 	hypercall_params[1]  = candidates;
@@ -279,7 +307,7 @@ int main(int argc, char * const* argv)
 	hypercall_params[9]  = migration[2];
 	hypercall_params[10] = maxtries;
 
-	perform_hypercalls(hypercall_params, interval);
+	perform_hypercalls(hypercall_params, decide, perform);
 
 	return EXIT_SUCCESS;
 }

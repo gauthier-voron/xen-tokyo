@@ -57,6 +57,8 @@ int monitor_migration_setrules(unsigned int maxtries);
  */
 int decide_migration(void);
 
+int perform_migration(void);
+
 /*
  * Start the monitoring of the system.
  * This allocate the memory necessary for the monitoring structure to work

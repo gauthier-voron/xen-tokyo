@@ -91,7 +91,7 @@ static int hypercall(unsigned long command, unsigned long *args, int *ret)
     DECLARE_HYPERCALL;
 
     if (xch == NULL)
-	    return -1;
+    	    return -1;
 
     hypercall.op = __HYPERVISOR_xen_version;
     hypercall.arg[0] = command;
@@ -164,14 +164,14 @@ static void perform_hypercalls(unsigned long *params, unsigned long decide,
 		clock_gettime(CLOCK_REALTIME, &ts);
 		now = ts.tv_sec * 1000 + ts.tv_nsec / 1000000ul;
 
-		if (goal_perform < now) {
+		if (goal_perform <= now) {
 			if (hypercall(HYPERCALL_CMD_PERFORM_MIGR, NULL, &ret))
 				error("failed to communicate with Xen");
 			if (ret != 0)
 				break;
 		}
 
-		if (goal_decide < now) {
+		if (goal_decide <= now) {
 			if (hypercall(HYPERCALL_CMD_DECIDE_MIGR, NULL, &ret))
 				error("failed to communicate with Xen");
 			if (ret != 0)

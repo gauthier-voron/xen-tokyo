@@ -513,12 +513,13 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 #ifdef BIGOS_PERF_COUNTING
     case HYPERCALL_BIGOS_PERF_ENABLE:
     {
-        unsigned long arr[11];
+        unsigned long arr[12];
         unsigned long tracked, candidate, enqueued;
         unsigned long enter, increment, decrement, maximum;
         unsigned long min_score, min_rate, flush, maxtries;
+        unsigned long rate;
 
-        if ( !copy_from_guest(&arr, arg, 11) )
+        if ( !copy_from_guest(&arr[0], arg, 12) )
         {
             tracked = arr[0];
             candidate = arr[1];
@@ -531,6 +532,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             min_rate = arr[8];
             flush = arr[9];
             maxtries = arr[10];
+            rate = arr[11];
 
             monitor_migration_settracked(tracked);
             monitor_migration_setcandidate(candidate);
@@ -538,9 +540,22 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             monitor_migration_setscores(enter, increment, decrement, maximum);
             monitor_migration_setcriterias(min_score, min_rate, flush);
             monitor_migration_setrules(maxtries);
+            monitor_migration_setrate(rate);
+        }
+        else
+        {
+            return -1;
         }
 
         printk("Enabling perf counting\n");
+        printk("  tracked = %lu\n  candidate = %lu\n  enqueued = %lu\n",
+               tracked, candidate, enqueued);
+        printk("  enter = %lu\n  increment = %lu\n  decrement = %lu\n",
+               enter, increment, decrement);
+        printk("  maximum = %lu\n  min_score = %lu\n  min_rate = %lu\n",
+               maximum, min_score, min_rate);
+        printk("  flush = %lu\n  maxtries = %lu\n  rate = %lu\n",
+               flush, maxtries, rate);
         return start_monitoring();
     }
 

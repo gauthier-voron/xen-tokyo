@@ -49,6 +49,7 @@ static unsigned int   monitor_min_node_score = BIGOS_MONITOR_MIN_NODE_SCORE;
 static unsigned int   monitor_min_node_rate = BIGOS_MONITOR_MIN_NODE_RATE;
 static unsigned char  monitor_flush_after_refill = BIGOS_MONITOR_FLUSH;
 static unsigned int   monitor_maxtries = BIGOS_MONITOR_MAXTRIES;
+static unsigned long  monitor_rate = BIGOS_MONITOR_RATE;
 
 
 #ifdef BIGOS_STATS
@@ -578,7 +579,7 @@ static int enable_monitoring_ibs(void)
         return ret;
 
     ibs_setevent(IBS_EVENT_OP);
-    ibs_setrate(0x40000);
+    ibs_setrate(monitor_rate);
     ibs_sethandler(ibs_nmi_handler);
     ibs_enable();
 
@@ -660,6 +661,24 @@ int monitor_migration_setcriterias(unsigned int min_node_score,
 int monitor_migration_setrules(unsigned int maxtries)
 {
     monitor_maxtries = maxtries;
+    return 0;
+}
+
+int monitor_migration_setrate(unsigned long rate)
+{
+    monitor_rate = rate;
+
+    if ( monitoring_started )
+    {
+        if ( ibs_capable() )
+            ibs_setrate(rate);
+        else if ( pebs_capable() )
+            ;
+        else
+            return -1;
+        return 0;
+    }
+
     return 0;
 }
 

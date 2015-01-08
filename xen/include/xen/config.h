@@ -130,5 +130,6 @@
 #define BIGOS_MONITOR_MIN_NODE_RATE         90
 #define BIGOS_MONITOR_FLUSH                  0
 #define BIGOS_MONITOR_MAXTRIES               4
+#define BIGOS_MONITOR_RATE             0x80000
 
 #endif /* __XEN_CONFIG_H__ */

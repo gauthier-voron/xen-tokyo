@@ -47,6 +47,14 @@ int monitor_migration_setcriterias(unsigned int min_node_score,
  */
 int monitor_migration_setrules(unsigned int maxtries);
 
+/*
+ * Set the sampling rate of memory access.
+ * More the rate is low, more the sampling are precise about what memory access
+ * are done, but more important is the sampling overhead.
+ * Return 0 in case of success.
+ */
+int monitor_migration_setrate(unsigned long rate);
+
 
 /*
  * Perform a decision about what page to migrate and place these pages in a

@@ -11,6 +11,7 @@
 #include <xen/migration.h>
 #include <xen/monitor.h>
 #include <xen/percpu.h>
+#include <xen/rbtree.h>
 
 
 struct migration_query
@@ -20,6 +21,7 @@ struct migration_query
     unsigned long   gfn;
     struct domain  *domain;
     unsigned int    tries;
+    struct rb_node  rbnode;
 };
 
 
@@ -31,7 +33,9 @@ static DEFINE_PER_CPU(unsigned long, migration_engine_owner);
 #define OWNER_DECIDER   2
 #define OWNER_MIGRATOR  3
 
-static struct migration_query *migration_queue;
+static struct rb_root          migration_tree;
+static unsigned long           migration_alloc;
+static struct migration_query *migration_pool;
 
 
 static unsigned long  monitor_tracked = BIGOS_MONITOR_TRACKED;
@@ -72,6 +76,7 @@ static unsigned long    migration_planned = 0;     /* # page in info_buffer */
 static unsigned long    migration_tries = 0;       /* # memory_move call */
 static unsigned long    migration_succeed = 0;     /* # memory_move return 0 */
 static unsigned long    migration_aborted = 0;     /* # maxtries cancel */
+static unsigned long    migration_nomove = 0;      /* # already good node */
 
 static void reset_stats(void)
 {
@@ -93,6 +98,7 @@ static void reset_stats(void)
     migration_tries = 0;
     migration_succeed = 0;
     migration_aborted = 0;
+    migration_nomove = 0;
     stats_start = 0;
     stats_end = 0;
 }
@@ -127,8 +133,11 @@ static void reset_stats(void)
 #define stats_account_migration_plan()          \
     migration_planned++
 
-#define stats_account_migration_abort()          \
+#define stats_account_migration_abort()         \
     migration_aborted++
+
+#define stats_account_migration_nomove()        \
+    migration_nomove++
 
 #define stats_account_migration_try(ret)            \
     migration_tries++, migration_succeed += (!(ret))
@@ -166,7 +175,7 @@ static void display_stats(void)
     MIN_MAX_AVG(sampling_accounting_time, min, max, avg);
     printk("sampling accounting time     %lu/%lu/%lu ns\n", min, max, avg);
     MIN_MAX_AVG(probing_count, min, max, avg);
-    printk("sampling probing count       %lu/%lu/%lu ns\n", min, max, avg);
+    printk("sampling probing count       %lu/%lu/%lu\n", min, max, avg);
     MIN_MAX_AVG(sampling_probing_time, min, max, avg);
     printk("sampling probing time        %lu/%lu/%lu ns\n", min, max, avg);
     printk("\n");
@@ -178,6 +187,7 @@ static void display_stats(void)
     printk("migration tries              %lu\n", migration_tries);
     printk("migration succeed            %lu\n", migration_succeed);
     printk("migration aborted            %lu\n", migration_aborted);
+    printk("migration useless            %lu\n", migration_nomove);
     printk("\n");
 
     MIN_MAX_AVG(sampling_total_time, min, max, avg);
@@ -203,6 +213,7 @@ static void display_stats(void)
 #define stats_stop_migration()             {}
 #define stats_account_migration_plan()     {}
 #define stats_account_migration_abort()    {}
+#define stats_account_migration_nomove()   {}
 #define stats_account_migration_try(ret)   {}
 #define display_stats()                    {}
 
@@ -215,9 +226,9 @@ static int alloc_migration_queue(void)
 	unsigned long order, size = monitor_enqueued;
 
     order = get_order_from_bytes(size * sizeof(struct migration_query));
-	migration_queue = alloc_xenheap_pages(order, 0);
+	migration_pool = alloc_xenheap_pages(order, 0);
 
-	if ( migration_queue == NULL )
+	if ( migration_pool == NULL )
 		ret = -1;
 	return ret;
 }
@@ -226,94 +237,173 @@ static void init_migration_queue(void)
 {
     unsigned long i;
 
+    migration_tree = RB_ROOT;
+    migration_alloc = 0;
+
     for (i=0; i<monitor_enqueued; i++)
-        migration_queue[i].mfn = INVALID_MFN;
+    {
+        migration_pool[i].mfn = INVALID_MFN;
+        RB_CLEAR_NODE(&migration_pool[i].rbnode);
+    }
 }
 
 static void free_migration_queue(void)
 {
 	unsigned long order, size = monitor_enqueued;
 
-    if ( migration_queue == NULL )
+    if ( migration_pool == NULL )
         return;
-	order = get_order_from_bytes(size * sizeof(struct hotlist_entry));
+	order = get_order_from_bytes(size * sizeof(struct migration_query));
 
-	free_xenheap_pages(migration_queue, order);
-    migration_queue = NULL;
+	free_xenheap_pages(migration_pool, order);
+    migration_pool = NULL;
 }
 
 
 
+static struct migration_query *find_migration_query(unsigned long mfn)
+{
+    struct rb_node *node = migration_tree.rb_node;
+    struct migration_query *query = NULL;
+
+    while ( node )
+    {
+        query = container_of(node, struct migration_query, rbnode);
+
+        if ( mfn < query->mfn )
+            node = node->rb_left;
+        else if ( mfn > query->mfn )
+            node = node->rb_right;
+        else
+            break;
+    }
+
+    return query;
+}
+
+static void insert_migration_query(struct migration_query *new,
+                                   struct migration_query *parent)
+{
+    struct rb_node *parent_node, **parent_ptr;
+
+    if ( unlikely(parent == NULL) )
+    {
+        parent_node = NULL;
+        parent_ptr = &migration_tree.rb_node;
+    }
+    else
+    {
+        parent_node = &parent->rbnode;
+        if ( new->mfn < parent->mfn )
+            parent_ptr = &parent_node->rb_left;
+        else
+            parent_ptr = &parent_node->rb_right;
+    }
+
+    rb_link_node(&new->rbnode, parent_node, parent_ptr);
+    rb_insert_color(&new->rbnode, &migration_tree);
+}
 
 static void fill_migration_queue(struct migration_buffer *buffer)
 {
-    unsigned long i, j, slot;
+    unsigned long i, mfn;
+    struct migration_query *query, *parent;
 
     for (i=0; i<buffer->size; i++)
     {
-        slot = monitor_enqueued;
+        mfn = buffer->migrations[i].pgid;
+        query = find_migration_query(mfn);
 
-        for (j=0; j<monitor_enqueued; j++)
-            if ( migration_queue[j].mfn == buffer->migrations[i].pgid )
-                break;
-            else if ( migration_queue[j].mfn == INVALID_MFN )
-                slot = j;
-
-        if ( j != monitor_enqueued )         /* entry already present */
+        if ( query != NULL && query->mfn == mfn )
             continue;
 
         stats_account_migration_plan();
 
-        if ( slot == monitor_enqueued )      /* no more empty slot */
-            break;
+        if ( migration_alloc == monitor_enqueued )
+            continue;
 
-        migration_queue[slot].mfn = buffer->migrations[i].pgid;
-        migration_queue[slot].node = buffer->migrations[i].node;
-        migration_queue[slot].gfn = INVALID_GFN;
-        migration_queue[slot].domain = NULL;
-        migration_queue[slot].tries = 0;
+        parent = query;
+        query = &migration_pool[migration_alloc];
+        migration_alloc++;
+
+        query->mfn = mfn;
+        query->node = buffer->migrations[i].node;
+        query->gfn = INVALID_GFN;
+        query->domain = NULL;
+        query->tries = 0;
+
+        insert_migration_query(query, parent);
     }
+}
+
+static void gc_migration_queue(void)
+{
+    unsigned long i = 0, j = migration_alloc;
+
+    while ( i < j )
+        if ( migration_pool[i].mfn == INVALID_MFN )
+        {
+            while ( j > i && migration_pool[j-1].mfn == INVALID_MFN )
+                j--;
+
+            if ( i == j )
+                break;
+
+            j--;
+
+            migration_pool[i] = migration_pool[j];
+            rb_replace_node(&migration_pool[j].rbnode,
+                            &migration_pool[i].rbnode, &migration_tree);
+        }
+        else
+        {
+            i++;
+        }
+
+    migration_alloc = j;
 }
 
 static void drain_migration_queue(void)
 {
-    unsigned long i;
-    unsigned long nid;
+    struct migration_query *query;
+    unsigned long i, nid;
     int ret;
 
-    for (i=0; i<monitor_enqueued; i++)
+    for (i=0; i<migration_alloc; i++)
     {
-        if ( migration_queue[i].mfn == INVALID_MFN )
-            continue;
+        query = &migration_pool[i];
 
-        nid = phys_to_nid(migration_queue[i].mfn << PAGE_SHIFT);
-        if ( migration_queue[i].node == nid )
+        nid = phys_to_nid(query->mfn << PAGE_SHIFT);
+        if ( query->node == nid )
         {
-            register_page_moved(migration_queue[i].mfn);
-            migration_queue[i].mfn = INVALID_MFN;
-            continue;
+            register_page_moved(query->mfn);
+            stats_account_migration_nomove();
+            goto garbage;
         }
 
-        if ( migration_queue[i].gfn == INVALID_GFN )
+        if ( query->gfn == INVALID_GFN )
         {
-            if ( ++migration_queue[i].tries >= monitor_maxtries )
+            if ( ++(query->tries) >= monitor_maxtries )
             {
-                migration_queue[i].mfn = INVALID_MFN;
                 stats_account_migration_abort();
+                goto garbage;
             }
             continue;
         }
 
-        stats_start_migration();
-        ret = memory_move(migration_queue[i].domain, migration_queue[i].gfn,
-                          migration_queue[i].node);
-        stats_stop_migration();
+        ret = memory_move(query->domain, query->gfn, query->node);
 
         stats_account_migration_try(ret);
-        register_page_moved(migration_queue[i].mfn);
-        migration_queue[i].mfn = INVALID_MFN;
+        register_page_moved(query->mfn);
+
+     garbage:
+        rb_erase(&query->rbnode, &migration_tree);
+        query->mfn = INVALID_MFN;
     }
+
+    gc_migration_queue();
 }
+
 
 int decide_migration(void)
 {
@@ -343,12 +433,17 @@ int perform_migration(void)
 {
     int cpu;
 
+    if ( !monitoring_started )
+        return -1;
+
     for_each_online_cpu ( cpu )
         while ( cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_NONE,
                         OWNER_MIGRATOR) != OWNER_NONE )
             ;
 
+    stats_start_migration();
     drain_migration_queue();
+    stats_stop_migration();
 
     for_each_online_cpu ( cpu )
         cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_MIGRATOR,
@@ -407,9 +502,15 @@ static void disable_monitoring_pebs(void)
     register_page_access_cpu(23, 3);
 
     buffer = refill_migration_buffer();
+    buffer->migrations[0].node = 1;
+    buffer->migrations[2].node = 2;
+
     for (i=0; i<buffer->size; i++)
         printk("migration of %lu to %u\n", buffer->migrations[i].pgid,
                buffer->migrations[i].node);
+
+    fill_migration_queue(buffer);
+    drain_migration_queue();
     fill_migration_queue(buffer);
 
     free_migration_engine();
@@ -420,7 +521,8 @@ static void disable_monitoring_pebs(void)
 
 static void ibs_nmi_handler(struct ibs_record *record)
 {
-    unsigned long i, vaddr, gfn, ogfn, mfn;
+    unsigned long vaddr, gfn, ogfn, mfn;
+    struct migration_query *query;
     uint32_t pfec;
 
     if ( cmpxchg(&this_cpu(migration_engine_owner), OWNER_NONE,
@@ -441,11 +543,9 @@ static void ibs_nmi_handler(struct ibs_record *record)
     vaddr = record->data_linear_address;
     mfn = record->data_physical_address >> PAGE_SHIFT;
 
-    for (i=0; i<monitor_enqueued; i++)
+    query = find_migration_query(mfn);
+    if ( query != NULL && query->mfn == mfn && query->gfn == INVALID_GFN )
     {
-        if ( migration_queue[i].mfn != mfn )
-            continue;
-
         local_irq_enable();
         pfec = PFEC_page_present;
 
@@ -456,10 +556,8 @@ static void ibs_nmi_handler(struct ibs_record *record)
         local_irq_disable();
 
         ogfn = INVALID_GFN;
-
-        if ( cmpxchg(&migration_queue[i].gfn, ogfn, gfn) != ogfn )
-            continue;
-        migration_queue[i].domain = current->domain;
+        if ( cmpxchg(&query->gfn, ogfn, gfn) == ogfn )
+            query->domain = current->domain;
     }
 
     stats_start_accounting();
@@ -480,7 +578,7 @@ static int enable_monitoring_ibs(void)
         return ret;
 
     ibs_setevent(IBS_EVENT_OP);
-    ibs_setrate(0x1000000);
+    ibs_setrate(0x40000);
     ibs_sethandler(ibs_nmi_handler);
     ibs_enable();
 

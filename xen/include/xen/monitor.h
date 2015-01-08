@@ -51,12 +51,15 @@ int monitor_migration_setrules(unsigned int maxtries);
 /*
  * Perform a decision about what page to migrate and place these pages in a
  * migration queue.
- * Also do migrate the pages in the migration queues which are ready to be
- * migrated.
  * Return 0 in case of success.
  */
 int decide_migration(void);
 
+/*
+ * Perform actual migration basing on what have been decided previously.
+ * Look in the migration queue for the pages planned which are ready.
+ * Return 0 in case of success.
+ */
 int perform_migration(void);
 
 /*

@@ -115,8 +115,11 @@
 /* Enable performance counting */
 #define BIGOS_PERF_COUNTING
 
-/* Enable statistics over monitoring && migration */
+/* Enable statistics over monitoring && migration without too much overhead */
 #define BIGOS_STATS
+
+/* Enable statistics over monitoring && migration with some overhead */
+/* #define BIGOS_MORE_STATS */
 
 /* Count of hot page per pcpu (consume 8 bytes per page) */
 #define BIGOS_MONITOR_TRACKED              512

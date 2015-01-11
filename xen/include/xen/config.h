@@ -117,7 +117,8 @@
 
 /* Enable statistics over monitoring && migration without too much overhead */
 #define BIGOS_STATS
-
+/* Enable statistics over memory and cache usage with some memory overhead */
+#define BIGOS_MEMORY_STATS
 /* Enable statistics over monitoring && migration with some overhead */
 /* #define BIGOS_MORE_STATS */
 

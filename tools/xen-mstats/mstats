@@ -1,0 +1,178 @@
+#!/usr/bin/perl -l
+use strict;
+use warnings;
+use threads;
+use threads::shared;
+
+
+my $PAGE_SIZE = 4096;
+my $HYPERCALL = -11;
+my $MAXWORKER = 48;
+my $MAXARGS   = 256;
+my $MINJOB    = 2048;
+
+my $size = shift(@ARGV);
+my %multi = ('k' => 1024, 'm' => 1024**2, 'g' => 1024**3);
+my $prefix;
+my $worker :shared;
+my %table  :shared;
+my $done   :shared;
+
+
+if (!defined($size)) {
+    printf(STDERR "error: undefined size\n");
+    exit 1;
+} elsif (!($size =~ /^(\d+)\s*([kKmMgG])?$/)) {
+    printf(STDERR "error: size must be '<digits><k|K|m|M|g|G>' and is '%s'\n",
+	   $size);
+    exit 1;
+}
+
+$size = $1;
+$prefix = $2;
+
+if (defined($prefix)) {
+    $size *= $multi{lc($prefix)};
+}
+
+
+sub _delegate
+{
+    my $from = shift();
+    my $to = shift();
+    my $mid;
+    my $create = 0;
+    my $thread;
+
+    if ($to - $from > $MINJOB) {
+	lock($worker);
+	if ($worker < $MAXWORKER) {
+	    $worker++;
+	    $create = 1;
+	}
+    }
+    
+    if ($create) {
+	$mid = int($from + ($to - $from) / 2);
+	$thread = threads->create(\&_gather, ($mid, $to));
+	$thread->detach();
+	$to = $mid;
+    }
+
+    return $to;
+}
+
+sub _command
+{
+    my $from = shift();
+    my $to = shift();
+    my $args;
+
+    if ($to > $MAXARGS) {
+	$to = $MAXARGS;
+    }
+
+    $args = "u$from u$to " . join(' ', ('u0') x (4 * $to));
+
+    return $args;
+}
+
+sub _result
+{
+    my $result = shift();
+    my $table = shift();
+    my @lines = split("\n", $result);
+    my ($count, $next, $i);
+    my ($mfn, $mem, $cache, $move);
+
+    return -1 if ($lines[0] ne 'ret = x0 / u0');
+    
+    shift(@lines);
+    @lines = map { s/^u(.*)$/$1/ ; $_ } @lines;
+    
+    $count = shift(@lines);
+    $next = shift(@lines);
+
+    for ($i=0; $i<$count; $i++) {
+	$mfn = $lines[0 + $i * 4];
+	$mem = $lines[1 + $i * 4];
+	$cache = $lines[2 + $i * 4];
+	$move = $lines[3 + $i * 4];
+
+	$table->{$mfn} = join(' ', $mem, $cache, $move);
+    }
+
+    return $next;
+}
+
+sub _gather
+{
+    my $from = shift();
+    my $to = shift();
+    my $origin = $from;
+    my $tmp;
+    my %tmptable;
+
+    while ($from < $to) {
+	$tmp = _command($from, $to);
+	$tmp = `xen-trigger $HYPERCALL $tmp`;
+	$tmp = _result($tmp, \%tmptable);
+
+	if ($tmp == $from) {
+	    $from = $to;
+	} else {
+	    $from = $tmp;
+	}
+
+	$to = _delegate($from, $to);
+    }
+
+    {
+	lock(%table);
+	foreach (keys(%tmptable)) {
+	    $table{$_} = $tmptable{$_};
+	}
+    }
+
+    {
+	lock($worker);
+	$worker--;
+	$done += ($to - $origin);
+
+	printf(STDERR "dumping from hypervisor: %d%% (%d threads running)\n",
+	       ($done *100) / ($size / $PAGE_SIZE), $worker);
+    }
+}
+
+sub gather
+{
+    my $from = shift();
+    my $to = shift();
+    my $test;
+    
+    $worker = 1;
+    $done = 0;
+    _gather($from, $to);
+    
+    while (1) {
+	$test = 0;
+	{
+	    lock($worker);
+	    $test = $worker > 0;
+	}
+	if ($test) {
+	    sleep 1;
+	} else {
+	    last;
+	}
+    }
+}
+
+
+gather(0, $size / $PAGE_SIZE);
+
+printf("page memory cache moves\n");
+foreach (sort({ $a <=> $b } keys(%table))) {
+    next if ($table{$_} eq '0 0 0');
+    printf($_ . ' ' . $table{$_} . "\n");
+}

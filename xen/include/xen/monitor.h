@@ -70,6 +70,7 @@ int decide_migration(void);
  */
 int perform_migration(void);
 
+
 /*
  * Start the monitoring of the system.
  * This allocate the memory necessary for the monitoring structure to work
@@ -84,6 +85,11 @@ int start_monitoring(void);
  * allocated by start_monitoring().
  */
 void stop_monitoring(void);
+
+
+int mstats_get_page(unsigned long mfn, unsigned long *memory,
+		    unsigned long *cache, unsigned long *moves,
+		    unsigned long *next);
 
 
 #endif

@@ -241,6 +241,9 @@ void __init do_initcalls(void)
 #  define HYPERCALL_BIGOS_PERFORM_MIGR  -10
 #endif
 
+#ifdef BIGOS_MEMORY_STATS
+#  define HYPERCALL_BIGOS_MEMSTATS      -11
+#endif
 
 #ifdef BIGOS_DIRECT_MSR
 #  ifndef COMPAT
@@ -576,6 +579,63 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return perform_migration();
     }
 #endif /* BIGOS_PERF_COUNTING */
+
+#ifdef BIGOS_MEMORY_STATS
+    case HYPERCALL_BIGOS_MEMSTATS:
+    {
+        unsigned long *res, arr[2];
+        unsigned long mfn, cnt;
+        unsigned long mem, cache, move, next;
+        unsigned long i, order;
+
+        if ( !copy_from_guest(&arr[0], arg, 2) )
+        {
+            mfn = arr[0];
+            cnt = arr[1];
+        }
+        else
+        {
+            goto err;
+        }
+
+        order = get_order_from_bytes((2 + 4 * cnt) * sizeof(unsigned long));
+        res = alloc_xenheap_pages(order, 0);
+        if (res == NULL)
+            goto err;
+
+        for (i=0; i<cnt; i++)
+        {
+            if ( mstats_get_page(mfn, &mem, &cache, &move, &next) != 0 )
+                goto err_free;
+
+            res[2 + i * 4] = mfn;
+            res[3 + i * 4] = mem;
+            res[4 + i * 4] = cache;
+            res[5 + i * 4] = move;
+
+            if ( next == mfn )
+            {
+                i++;
+                break;
+            }
+
+            mfn = next;
+        }
+
+        res[0] = i;
+        res[1] = next;
+
+        if ( copy_to_guest(arg, res, 2 + 4 * cnt) )
+            goto err_free;
+
+        free_xenheap_pages(res, order);
+        return 0;
+    err_free:
+        free_xenheap_pages(res, order);
+    err:
+        return -1;
+    }
+#endif /* BIGOS_MEMORY_STATS */
 
     case XENVER_version:
     {

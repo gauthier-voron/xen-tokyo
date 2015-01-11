@@ -79,7 +79,7 @@ static unsigned long    migration_succeed = 0;     /* # memory_move return 0 */
 static unsigned long    migration_aborted = 0;     /* # maxtries cancel */
 static unsigned long    migration_nomove = 0;      /* # already good node */
 
-static void reset_stats(void)
+static void stats_reset(void)
 {
     int cpu;
 
@@ -161,7 +161,7 @@ static void reset_stats(void)
         avg /= ____count;                           \
     }
 
-static void display_stats(void)
+static void stats_display(void)
 {
     unsigned long min, max, avg;
 
@@ -197,9 +197,9 @@ static void display_stats(void)
             * 100) / (stats_end - stats_start + 1));
 }
 
-#else
+#else /* ifndef BIGOS_STATS */
 
-#define reset_stats()                      {}
+#define stats_reset()                      {}
 #define stats_start()                      {}
 #define stats_end()                        {}
 #define stats_start_sampling()             {}
@@ -216,9 +216,119 @@ static void display_stats(void)
 #define stats_account_migration_abort()    {}
 #define stats_account_migration_nomove()   {}
 #define stats_account_migration_try(ret)   {}
-#define display_stats()                    {}
+#define stats_display()                    {}
 
-#endif
+#endif /* ifndef BIGOS_STATS */
+
+
+#ifdef BIGOS_MEMORY_STATS
+
+struct mstats_page
+{
+    unsigned long   memory_access : 27;
+    unsigned long   cache_access  : 27;
+    unsigned long   moves         : 10;
+};
+
+static struct mstats_page *mstats_pool;
+
+
+static int mstats_alloc(void)
+{
+    int ret = 0;
+	unsigned long order, size = total_pages;
+
+    order = get_order_from_bytes(size * sizeof(struct mstats_page));
+	mstats_pool = alloc_xenheap_pages(order, 0);
+
+    printk("Allocated %lu bytes for memory statistics\n",
+           size * sizeof(struct mstats_page));
+
+	if ( mstats_pool == NULL )
+		ret = -1;
+	return ret;
+}
+
+static void mstats_init(void)
+{
+    unsigned long i;
+
+    for (i=0; i<total_pages; i++)
+    {
+        mstats_pool[i].memory_access = 0;
+        mstats_pool[i].cache_access = 0;
+        mstats_pool[i].moves = 0;
+    }
+
+    printk("Initialized %lu entries for memory statistics\n", total_pages);
+}
+
+static int mstats_reset(void)
+{
+    int ret = 0;
+
+    if ( mstats_pool == NULL )
+        ret = mstats_alloc();
+    if ( ret == 0 )
+        mstats_init();
+
+    return ret;
+}
+
+
+static inline void mstats_memory_access(unsigned long mfn)
+{
+    mstats_pool[mfn].memory_access++;
+}
+
+static inline void mstats_cache_access(unsigned long mfn)
+{
+    mstats_pool[mfn].cache_access++;
+}
+
+static inline void mstats_memory_moved(unsigned long mfn)
+{
+    mstats_pool[mfn].moves++;
+}
+
+int mstats_get_page(unsigned long mfn, unsigned long *memory,
+                    unsigned long *cache, unsigned long *moves,
+                    unsigned long *next)
+{
+    if ( mstats_pool == NULL )
+        return -1;
+    if ( mfn >= total_pages )
+        return -1;
+
+    *memory = mstats_pool[mfn].memory_access;
+    *cache = mstats_pool[mfn].cache_access;
+    *moves = mstats_pool[mfn].moves;
+
+    *next = mfn;
+    for (mfn++; mfn<total_pages; mfn++)
+    {
+        if ( mstats_pool[mfn].memory_access != 0 )
+            break;
+        if ( mstats_pool[mfn].cache_access != 0 )
+            break;
+        if ( mstats_pool[mfn].moves != 0 )
+            break;
+    }
+
+    if ( mfn < total_pages )
+        *next = mfn;
+
+    return 0;
+}
+
+#else /* ifndef BIGOS_MEMORY_STATS */
+
+#define mstats_reset()                     (0)
+#define mstats_memory_access(mfn)          do { } while (0)
+#define mstats_cache_access(mfn)           do { } while (0)
+#define mstats_memory_moved(mfn)           do { } while (0)
+
+#endif /* ifndef BIGOS_MEMORY_STATS */
 
 
 static int alloc_migration_queue(void)
@@ -395,6 +505,8 @@ static void drain_migration_queue(void)
         ret = memory_move(query->domain, query->gfn, query->node);
 
         stats_account_migration_try(ret);
+        mstats_memory_moved(query->mfn);
+
         register_page_moved(query->mfn);
 
      garbage:
@@ -516,6 +628,17 @@ static void disable_monitoring_pebs(void)
 
     free_migration_engine();
 
+    mstats_memory_access(48);
+    mstats_memory_access(1031);
+    mstats_memory_access(4124);
+
+    mstats_cache_access(48);
+    mstats_cache_access(3445);
+    mstats_cache_access(7564);
+
+    mstats_memory_moved(3453);
+    mstats_memory_moved(8343);
+
     /* pebs_disable(); */
     /* pebs_release(); */
 }
@@ -543,6 +666,11 @@ static void ibs_nmi_handler(struct ibs_record *record)
 
     vaddr = record->data_linear_address;
     mfn = record->data_physical_address >> PAGE_SHIFT;
+
+    if ( record->cache_infos & IBS_RECORD_DCMISS )
+        mstats_memory_access(mfn);
+    else
+        mstats_cache_access(mfn);
 
     query = find_migration_query(mfn);
     if ( query != NULL && query->mfn == mfn && query->gfn == INVALID_GFN )
@@ -687,7 +815,10 @@ int start_monitoring(void)
 {
     if ( monitoring_started )
         return -1;
-    reset_stats();
+
+    stats_reset();
+    if ( mstats_reset() != 0 )
+        goto err;
 
     if ( alloc_migration_queue() != 0 )
         goto err;
@@ -725,6 +856,7 @@ void stop_monitoring(void)
 {
     if ( !monitoring_started )
         return;
+
     stats_end();
 
     if ( ibs_capable() )
@@ -737,7 +869,7 @@ void stop_monitoring(void)
     free_migration_engine();
     free_migration_queue();
 
-    display_stats();
+    stats_display();
 }
 
  /*

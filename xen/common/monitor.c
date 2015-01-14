@@ -675,6 +675,19 @@ static void ibs_nmi_handler(struct ibs_record *record)
     query = find_migration_query(mfn);
     if ( query != NULL && query->mfn == mfn && query->gfn == INVALID_GFN )
     {
+
+        /*
+         * This lines reject the sample if the current cpu is performing an
+         * asynchronous context switch.
+         * If so, we are likely going to receive an IPI during the call to
+         * try_paging_gva_to_gfn() for performing remote TLB flush.
+         * This will trigger a synchronous context_switch while we are looking
+         * the guest page table, which would be fatal.
+         */
+
+        if ( this_cpu(curr_vcpu) != current )
+            goto out;
+
         local_irq_enable();
         pfec = PFEC_page_present;
 

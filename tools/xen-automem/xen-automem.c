@@ -58,14 +58,18 @@ static void usage(FILE *stream)
 		"to be migrated, and if\n"
 		"                                   the hotlists are "
 		"flushed after a migration\n\n"
-		"  -r --maxtries                    specify the amount of "
+		"  -r, --maxtries                   specify the amount of "
 		"hypercall a migration\n"
 		"                                   query can stay queued "
 		"before to be aborted\n\n"
-		"  -s --sampling                    specify the sampling rate "
+		"  -s, --sampling                   specify the sampling rate "
 		"where a low rate\n"
 		"                                   indicates frequent "
-		"samples\n");
+		"samples\n\n"
+		"  -o, --order                      specify the granularity "
+		"of the migrations to\n"
+		"                                   perform where 0 is 4K, 1 "
+		"is 8K, ...\n");
 }
 
 static void version(FILE *stream)
@@ -212,14 +216,15 @@ int main(int argc, char * const* argv)
 	int c;
 	unsigned char tracked_opt = 0, candidates_opt = 0, enqueued_opt = 0;
 	unsigned char hotlist_opt = 0, migration_opt = 0, maxtries_opt = 0;
-	unsigned char rate_opt = 0;
+	unsigned char rate_opt = 0, order_opt = 0;
 	unsigned long tracked = 512, candidates = 32, enqueued = 4;
 	unsigned long hotlist[4] = {8, 8, 1, 1024};
 	unsigned long migration[3] = {256, 90, 0};
 	unsigned long maxtries = 4;
 	unsigned long rate = 0x80000;
+	unsigned long order = 9;
 	unsigned long decide, perform;
-	unsigned long hypercall_params[12];
+	unsigned long hypercall_params[13];
 	
 	struct option options[] = {
 		{"help",       no_argument,       0, 'h'},
@@ -231,11 +236,13 @@ int main(int argc, char * const* argv)
 		{"migration",  required_argument, 0, 'm'},
 		{"maxtries",   required_argument, 0, 'r'},
 		{"sampling",   required_argument, 0, 's'},
+		{"order",      required_argument, 0, 'o'},
 		{ NULL,        0,                 0,  0 }
 	};
 
 	while (1) {
-		c = getopt_long(argc,argv, "h?vt:c:q:l:m:r:s:", options, NULL);
+		c = getopt_long(argc, argv, "h?vt:c:q:l:m:r:s:o:",
+				options, NULL);
 		if (c == -1)
 			break;
 
@@ -296,6 +303,13 @@ int main(int argc, char * const* argv)
 				error("invalid 'sampling' parameter: '%s'",
 				      optarg);
 			break;
+		case 'o':
+			if (order_opt++ > 0)
+				error("option 'order' specified twice");
+			if (parse_numbers(&order, 1, optarg) != 0)
+				error("invalid 'order' parameter: '%s'",
+				      optarg);
+			break;
 		}
 	}
 
@@ -322,6 +336,7 @@ int main(int argc, char * const* argv)
 	hypercall_params[9]  = migration[2];
 	hypercall_params[10] = maxtries;
 	hypercall_params[11] = rate;
+	hypercall_params[12] = order;
 
 	perform_hypercalls(hypercall_params, decide, perform);
 

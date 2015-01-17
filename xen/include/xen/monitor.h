@@ -55,6 +55,13 @@ int monitor_migration_setrules(unsigned int maxtries);
  */
 int monitor_migration_setrate(unsigned long rate);
 
+/*
+ * Set the size order of migrated pages.
+ * The order X means (1 << X) pages are moved at each migration.
+ * Return 0 in case of success.
+ */
+int monitor_migration_setorder(unsigned long order);
+
 
 /*
  * Perform a decision about what page to migrate and place these pages in a
@@ -87,6 +94,12 @@ int start_monitoring(void);
 void stop_monitoring(void);
 
 
+/*
+ * Collect statistics over memory usage during monitoring.
+ * Given an mfn, return the count of memory (uncached) access, cached access,
+ * memory migrations and the next mfn having one of these fields non-zero.
+ * Return 0 in case of success.
+ */
 int mstats_get_page(unsigned long mfn, unsigned long *memory,
 		    unsigned long *cache, unsigned long *moves,
 		    unsigned long *next);

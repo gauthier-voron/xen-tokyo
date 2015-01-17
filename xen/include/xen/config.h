@@ -135,5 +135,6 @@
 #define BIGOS_MONITOR_FLUSH                  0
 #define BIGOS_MONITOR_MAXTRIES               4
 #define BIGOS_MONITOR_RATE             0x80000
+#define BIGOS_MONITOR_ORDER                  9
 
 #endif /* __XEN_CONFIG_H__ */

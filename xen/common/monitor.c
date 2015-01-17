@@ -50,6 +50,7 @@ static unsigned int   monitor_min_node_rate = BIGOS_MONITOR_MIN_NODE_RATE;
 static unsigned char  monitor_flush_after_refill = BIGOS_MONITOR_FLUSH;
 static unsigned int   monitor_maxtries = BIGOS_MONITOR_MAXTRIES;
 static unsigned long  monitor_rate = BIGOS_MONITOR_RATE;
+static unsigned long  monitor_order = BIGOS_MONITOR_ORDER;
 
 
 #ifdef BIGOS_STATS
@@ -477,7 +478,8 @@ static void gc_migration_queue(void)
 static void drain_migration_queue(void)
 {
     struct migration_query *query;
-    unsigned long i, nid;
+    unsigned long i, j, nid, tmp;
+    unsigned long cnt, mask;
     int ret;
 
     for (i=0; i<migration_alloc; i++)
@@ -502,10 +504,19 @@ static void drain_migration_queue(void)
             continue;
         }
 
-        ret = memory_move(query->domain, query->gfn, query->node);
+        cnt = 1 << monitor_order;
+        mask = ~(cnt - 1);
 
-        stats_account_migration_try(ret);
-        mstats_memory_moved(query->mfn);
+        for (j=0; j<cnt; j++)
+        {
+            tmp = (query->gfn & mask) + j;
+
+            ret = memory_move(query->domain, tmp, query->node);
+            stats_account_migration_try(ret);
+
+            tmp = (query->mfn & mask) + j;
+            mstats_memory_moved(tmp);
+        }
 
         register_page_moved(query->mfn);
 
@@ -666,6 +677,7 @@ static void ibs_nmi_handler(struct ibs_record *record)
 
     vaddr = record->data_linear_address;
     mfn = record->data_physical_address >> PAGE_SHIFT;
+    mfn &= ~((1 << monitor_order) - 1);
 
     if ( record->cache_infos & IBS_RECORD_DCMISS )
         mstats_memory_access(mfn);
@@ -820,6 +832,18 @@ int monitor_migration_setrate(unsigned long rate)
         return 0;
     }
 
+    return 0;
+}
+
+int monitor_migration_setorder(unsigned long order)
+{
+    int restart = monitoring_started;
+
+    stop_monitoring();
+    monitor_order = order;
+
+    if ( restart )
+        return start_monitoring();
     return 0;
 }
 

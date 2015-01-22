@@ -123,18 +123,19 @@
 /* #define BIGOS_MORE_STATS */
 
 /* Count of hot page per pcpu (consume 8 bytes per page) */
-#define BIGOS_MONITOR_TRACKED              512
-#define BIGOS_MONITOR_CANDIDATE             32
-#define BIGOS_MONITOR_ENQUEUED               4
-#define BIGOS_MONITOR_ENTER                  8
-#define BIGOS_MONITOR_INCREMENT              8
-#define BIGOS_MONITOR_DECREMENT              1
-#define BIGOS_MONITOR_MAXIMUM             1024
-#define BIGOS_MONITOR_MIN_NODE_SCORE       256
-#define BIGOS_MONITOR_MIN_NODE_RATE         90
-#define BIGOS_MONITOR_FLUSH                  0
-#define BIGOS_MONITOR_MAXTRIES               4
-#define BIGOS_MONITOR_RATE             0x80000
-#define BIGOS_MONITOR_ORDER                  9
+#define BIGOS_MONITOR_TRACKED                     512
+#define BIGOS_MONITOR_CANDIDATE                    64
+#define BIGOS_MONITOR_ENQUEUED                   1024
+#define BIGOS_MONITOR_ENTER                         1
+#define BIGOS_MONITOR_INCREMENT                     1
+#define BIGOS_MONITOR_DECREMENT                     0
+#define BIGOS_MONITOR_MAXIMUM                    1024
+#define BIGOS_MONITOR_MIN_NODE_SCORE                1
+#define BIGOS_MONITOR_MIN_NODE_RATE                60
+#define BIGOS_MONITOR_FLUSH                         1
+#define BIGOS_MONITOR_MAXTRIES                     16
+#define BIGOS_MONITOR_RATE                     130000
+#define BIGOS_MONITOR_ORDER                         7
+#define BIGOS_MONITOR_RESET            (10000000000ul)
 
 #endif /* __XEN_CONFIG_H__ */

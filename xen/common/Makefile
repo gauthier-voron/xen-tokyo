@@ -54,6 +54,7 @@ obj-y += lzo.o
 obj-y += monitor.o
 obj-y += hotlist.o
 obj-y += migration.o
+obj-y += mcooldown.o
 
 obj-bin-$(CONFIG_X86) += $(foreach n,decompress bunzip2 unxz unlzma unlzo unlz4 earlycpio,$(n).init.o)
 

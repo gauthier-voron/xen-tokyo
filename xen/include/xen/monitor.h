@@ -56,11 +56,13 @@ int monitor_migration_setrules(unsigned int maxtries);
 int monitor_migration_setrate(unsigned long rate);
 
 /*
- * Set the size order of migrated pages.
- * The order X means (1 << X) pages are moved at each migration.
+ * Set the size order of migrated pages and the reset time for migration.
+ * The order X means (1 << X) pages are moved at each migration. If a
+ * migration occurs less than the reset time after a migration of the same
+ * block of physical addresses, then only one page is moved instead.
  * Return 0 in case of success.
  */
-int monitor_migration_setorder(unsigned long order);
+int monitor_migration_setorder(unsigned long order, unsigned long reset);
 
 
 /*

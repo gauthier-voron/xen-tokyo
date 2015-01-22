@@ -58,18 +58,21 @@ static void usage(FILE *stream)
 		"to be migrated, and if\n"
 		"                                   the hotlists are "
 		"flushed after a migration\n\n"
-		"  -r, --maxtries                   specify the amount of "
+		"  -r, --maxtries count             specify the amount of "
 		"hypercall a migration\n"
 		"                                   query can stay queued "
 		"before to be aborted\n\n"
-		"  -s, --sampling                   specify the sampling rate "
+		"  -s, --sampling rate              specify the sampling rate "
 		"where a low rate\n"
 		"                                   indicates frequent "
 		"samples\n\n"
-		"  -o, --order                      specify the granularity "
+		"  -o, --order order:reset          specify the granularity "
 		"of the migrations to\n"
 		"                                   perform where 0 is 4K, 1 "
-		"is 8K, ...\n");
+		"is 8K, ... and the\n"
+		"		                   reset time (in ms) before "
+		"to apply this\n"
+		"		                   order for a same block\n");
 }
 
 static void version(FILE *stream)
@@ -221,10 +224,10 @@ int main(int argc, char * const* argv)
 	unsigned long hotlist[4] = {8, 8, 1, 1024};
 	unsigned long migration[3] = {256, 90, 0};
 	unsigned long maxtries = 4;
+	unsigned long order[2] = {9, 13700};
 	unsigned long rate = 0x80000;
-	unsigned long order = 9;
 	unsigned long decide, perform;
-	unsigned long hypercall_params[13];
+	unsigned long hypercall_params[14];
 	
 	struct option options[] = {
 		{"help",       no_argument,       0, 'h'},
@@ -306,7 +309,7 @@ int main(int argc, char * const* argv)
 		case 'o':
 			if (order_opt++ > 0)
 				error("option 'order' specified twice");
-			if (parse_numbers(&order, 1, optarg) != 0)
+			if (parse_numbers(order, 2, optarg) != 0)
 				error("invalid 'order' parameter: '%s'",
 				      optarg);
 			break;
@@ -336,7 +339,8 @@ int main(int argc, char * const* argv)
 	hypercall_params[9]  = migration[2];
 	hypercall_params[10] = maxtries;
 	hypercall_params[11] = rate;
-	hypercall_params[12] = order;
+	hypercall_params[12] = order[0];
+	hypercall_params[13] = order[1] * 1000000ul;  /* ms to ns */
 
 	perform_hypercalls(hypercall_params, decide, perform);
 

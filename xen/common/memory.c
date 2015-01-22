@@ -1159,7 +1159,8 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     return 0;
 }
 
-int memory_move(struct domain *d, unsigned long gfn, unsigned long node)
+unsigned long memory_move(struct domain *d, unsigned long gfn,
+                          unsigned long node)
 {
     unsigned int memflags;
     struct page_info *old = NULL;
@@ -1194,7 +1195,7 @@ int memory_move(struct domain *d, unsigned long gfn, unsigned long node)
 
     put_gfn(d, gfn);                                          /* put the gfn */
 
-    return 0;
+    return page_to_mfn(new);
  fail_new:
     free_domheap_pages(new, 0);
  fail_old:
@@ -1203,7 +1204,7 @@ int memory_move(struct domain *d, unsigned long gfn, unsigned long node)
     if ( assign_pages(d, old, 0, MEMF_no_refcount) )
         BUG();
  fail_gfn:
-    return -1;
+    return INVALID_MFN;
 }
 #endif /* BIGOS_MEMORY_MOVE */
 

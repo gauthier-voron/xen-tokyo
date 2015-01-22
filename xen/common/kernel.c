@@ -496,7 +496,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         }
 
         node = phys_to_nid(mfn << PAGE_SHIFT);
-        if ( memory_move(d, gfn, node) )
+        if ( memory_move(d, gfn, node) == INVALID_MFN )
         {
             put_domain(d);
             return -1;
@@ -520,9 +520,9 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         unsigned long tracked, candidate, enqueued;
         unsigned long enter, increment, decrement, maximum;
         unsigned long min_score, min_rate, flush, maxtries;
-        unsigned long rate, order;
+        unsigned long rate, order, reset;
 
-        if ( !copy_from_guest(&arr[0], arg, 13) )
+        if ( !copy_from_guest(&arr[0], arg, 14) )
         {
             tracked = arr[0];
             candidate = arr[1];
@@ -537,6 +537,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             maxtries = arr[10];
             rate = arr[11];
             order = arr[12];
+            reset = arr[13];
 
             monitor_migration_settracked(tracked);
             monitor_migration_setcandidate(candidate);
@@ -545,7 +546,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             monitor_migration_setcriterias(min_score, min_rate, flush);
             monitor_migration_setrules(maxtries);
             monitor_migration_setrate(rate);
-            monitor_migration_setorder(order);
+            monitor_migration_setorder(order, reset);
         }
         else
         {
@@ -561,7 +562,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
                maximum, min_score, min_rate);
         printk("  flush = %lu\n  maxtries = %lu\n  rate = %lu\n",
                flush, maxtries, rate);
-        printk("  order = %lu\n", order);
+        printk("  order = %lu\n  reset = %lu\n", order, reset);
         return start_monitoring();
     }
 

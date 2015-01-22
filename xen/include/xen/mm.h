@@ -402,11 +402,11 @@ void clear_memory_moved_gfn(void);
  * nodes. The move can be done concurrently with other operations.
  * <future>If a node has to be moved on a node it already is, nothing is done
  * for this page.</future>
- * Return the count of actually moved pages (since some pages cannot be moved).
- * Now: the actually moved gfn are set in the gfns array to INVALID_MFN
- * Finally: const *gnfs // nodes is filled with the new node of each gfn
+ * Return the newly assocated mfn to the given gfn on success, or INVALID_MFN
+ * otherwise.
  */
-int memory_move(struct domain *d, unsigned long gfn, unsigned long node);
+unsigned long memory_move(struct domain *d, unsigned long gfn,
+			  unsigned long node);
 #endif
 
 #endif /* __XEN_MM_H__ */

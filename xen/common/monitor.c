@@ -8,10 +8,14 @@
 #include <xen/config.h>
 #include <xen/hotlist.h>
 #include <xen/lib.h>
+#include <xen/mcooldown.h>
 #include <xen/migration.h>
 #include <xen/monitor.h>
 #include <xen/percpu.h>
 #include <xen/rbtree.h>
+#include <xen/sched.h>
+
+#include <asm/event.h>
 
 
 struct migration_query
@@ -37,6 +41,7 @@ static struct rb_root          migration_tree;
 static unsigned long           migration_alloc;
 static struct migration_query *migration_pool;
 
+static struct mcooldown  migration_cooldown;
 
 static unsigned long  monitor_tracked = BIGOS_MONITOR_TRACKED;
 static unsigned long  monitor_candidate = BIGOS_MONITOR_CANDIDATE;
@@ -51,6 +56,7 @@ static unsigned char  monitor_flush_after_refill = BIGOS_MONITOR_FLUSH;
 static unsigned int   monitor_maxtries = BIGOS_MONITOR_MAXTRIES;
 static unsigned long  monitor_rate = BIGOS_MONITOR_RATE;
 static unsigned long  monitor_order = BIGOS_MONITOR_ORDER;
+static unsigned long  monitor_reset = BIGOS_MONITOR_RESET;
 
 
 #ifdef BIGOS_STATS
@@ -142,7 +148,7 @@ static void stats_reset(void)
     migration_nomove++
 
 #define stats_account_migration_try(ret)            \
-    migration_tries++, migration_succeed += (!(ret))
+    migration_tries++, migration_succeed += (ret)
 
 
 #define MIN_MAX_AVG(percpu, min, max, avg)          \
@@ -478,20 +484,26 @@ static void gc_migration_queue(void)
 static void drain_migration_queue(void)
 {
     struct migration_query *query;
-    unsigned long i, j, nid, tmp;
-    unsigned long cnt, mask;
-    int ret;
+    unsigned long i, j, nid;
+    unsigned long ret, nmfn;
 
     for (i=0; i<migration_alloc; i++)
     {
+        if ( hypercall_preempt_check() )
+            break;
+
         query = &migration_pool[i];
 
-        nid = phys_to_nid(query->mfn << PAGE_SHIFT);
+        nid = phys_to_nid(query->mfn << (monitor_order + PAGE_SHIFT));
         if ( query->node == nid )
         {
-            register_page_moved(query->mfn);
             stats_account_migration_nomove();
-            goto garbage;
+            goto done;
+        }
+
+        if ( check_cooldown(&migration_cooldown, query->mfn) )
+        {
+            goto done;
         }
 
         if ( query->gfn == INVALID_GFN )
@@ -504,22 +516,26 @@ static void drain_migration_queue(void)
             continue;
         }
 
-        cnt = 1 << monitor_order;
-        mask = ~(cnt - 1);
+        query->gfn <<= monitor_order;
+        query->mfn <<= monitor_order;
+        nmfn = INVALID_MFN;
 
-        for (j=0; j<cnt; j++)
+        for (j=0; j<(1 << monitor_order); j++)
         {
-            tmp = (query->gfn & mask) + j;
+            ret = memory_move(query->domain, query->gfn + j, query->node);
+            stats_account_migration_try(ret != INVALID_MFN);
 
-            ret = memory_move(query->domain, tmp, query->node);
-            stats_account_migration_try(ret);
+            if ( ret != INVALID_MFN )
+                nmfn = ret;
 
-            tmp = (query->mfn & mask) + j;
-            mstats_memory_moved(tmp);
+            mstats_memory_moved(query->mfn + j);
         }
 
-        register_page_moved(query->mfn);
+        if ( nmfn != INVALID_MFN )
+            arm_mcooldown(&migration_cooldown, nmfn >> monitor_order);
 
+     done:
+        register_page_moved(query->mfn >> monitor_order);
      garbage:
         rb_erase(&query->rbnode, &migration_tree);
         query->mfn = INVALID_MFN;
@@ -677,12 +693,13 @@ static void ibs_nmi_handler(struct ibs_record *record)
 
     vaddr = record->data_linear_address;
     mfn = record->data_physical_address >> PAGE_SHIFT;
-    mfn &= ~((1 << monitor_order) - 1);
 
     if ( record->cache_infos & IBS_RECORD_DCMISS )
         mstats_memory_access(mfn);
     else
         mstats_cache_access(mfn);
+
+    mfn >>= monitor_order;
 
     query = find_migration_query(mfn);
     if ( query != NULL && query->mfn == mfn && query->gfn == INVALID_GFN )
@@ -710,6 +727,7 @@ static void ibs_nmi_handler(struct ibs_record *record)
         local_irq_disable();
 
         ogfn = INVALID_GFN;
+        gfn >>= monitor_order;
         if ( cmpxchg(&query->gfn, ogfn, gfn) == ogfn )
             query->domain = current->domain;
     }
@@ -835,12 +853,13 @@ int monitor_migration_setrate(unsigned long rate)
     return 0;
 }
 
-int monitor_migration_setorder(unsigned long order)
+int monitor_migration_setorder(unsigned long order, unsigned long reset)
 {
     int restart = monitoring_started;
 
     stop_monitoring();
     monitor_order = order;
+    monitor_reset = reset;
 
     if ( restart )
         return start_monitoring();
@@ -859,11 +878,14 @@ int start_monitoring(void)
 
     if ( alloc_migration_queue() != 0 )
         goto err;
+    if ( alloc_mcooldown(&migration_cooldown, total_pages >> monitor_order) )
+        goto err_queue;
     if ( alloc_migration_engine(monitor_tracked, monitor_candidate,
                                 monitor_enqueued) != 0 )
-        goto err_queue;
+        goto err_mcooldown;
 
     init_migration_queue();
+    init_mcooldown(&migration_cooldown, monitor_reset);
     init_migration_engine();
 
     param_migration_lists(monitor_enter, monitor_increment,
@@ -883,6 +905,8 @@ out:
     return 0;
 err_engine:
     free_migration_engine();
+err_mcooldown:
+    free_mcooldown(&migration_cooldown);
 err_queue:
     free_migration_queue();
 err:
@@ -904,6 +928,7 @@ void stop_monitoring(void)
     monitoring_started = 0;
 
     free_migration_engine();
+    free_mcooldown(&migration_cooldown);
     free_migration_queue();
 
     stats_display();

@@ -1101,7 +1101,6 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
 {
     unsigned long old_mfn = page_to_mfn(old), new_mfn = page_to_mfn(new);
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
-    int drop;
 
     ASSERT(gfn == mfn_to_gmfn(d, old_mfn));
     ASSERT(old->count_info & _PGC_allocated);
@@ -1111,16 +1110,7 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     ASSERT(!SHARED_M2P(gfn));
 
     if ( assign_pages(d, new, 0, MEMF_no_refcount) )
-    {
-        spin_lock(&d->page_alloc_lock);
-        drop = (!domain_adjust_tot_pages(d, -1));
-        spin_unlock(&d->page_alloc_lock);
-
-        if ( drop )
-            put_domain(d);
-
         return -1;
-    }
 
     set_memory_moved_gfn(d, gfn);                  /* gfn is fault protected */
 

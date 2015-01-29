@@ -487,6 +487,15 @@ static void drain_migration_queue(void)
     unsigned long i, j, nid;
     unsigned long ret, nmfn;
 
+    /*
+     * Perform the garbage collection from the previous call to drain
+     * migration_queue().
+     * This allow to exit immediately if the call to hypercall_preemt_check()
+     * tells us the domain has something important to do.
+     */
+
+    gc_migration_queue();
+
     for (i=0; i<migration_alloc; i++)
     {
         if ( hypercall_preempt_check() )
@@ -503,7 +512,7 @@ static void drain_migration_queue(void)
 
         if ( check_cooldown(&migration_cooldown, query->mfn) )
         {
-            goto done;
+            goto garbage;
         }
 
         if ( query->gfn == INVALID_GFN )
@@ -540,8 +549,6 @@ static void drain_migration_queue(void)
         rb_erase(&query->rbnode, &migration_tree);
         query->mfn = INVALID_MFN;
     }
-
-    gc_migration_queue();
 }
 
 
@@ -915,6 +922,8 @@ err:
 
 void stop_monitoring(void)
 {
+    int cpu;
+
     if ( !monitoring_started )
         return;
 
@@ -926,6 +935,19 @@ void stop_monitoring(void)
         disable_monitoring_pebs();
 
     monitoring_started = 0;
+
+    /*
+     * Ensure no NMI interrupt is occuring before to free the data structures
+     * of monitoring.
+     * No need to really lock because IBS/PEBS is disabled but an interrupt
+     * could start before this function execution, so just wait the locks are
+     * free.
+     */
+
+    for_each_online_cpu ( cpu )
+        while ( cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_NONE,
+                        OWNER_NONE) != OWNER_NONE )
+            ;
 
     free_migration_engine();
     free_mcooldown(&migration_cooldown);

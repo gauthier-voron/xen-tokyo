@@ -1101,7 +1101,6 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
 {
     unsigned long old_mfn = page_to_mfn(old), new_mfn = page_to_mfn(new);
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
-    int drop;
 
     ASSERT(gfn == mfn_to_gmfn(d, old_mfn));
     ASSERT(old->count_info & _PGC_allocated);
@@ -1111,16 +1110,7 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     ASSERT(!SHARED_M2P(gfn));
 
     if ( assign_pages(d, new, 0, MEMF_no_refcount) )
-    {
-        spin_lock(&d->page_alloc_lock);
-        drop = (!domain_adjust_tot_pages(d, -1));
-        spin_unlock(&d->page_alloc_lock);
-
-        if ( drop )
-            put_domain(d);
-
         return -1;
-    }
 
     set_memory_moved_gfn(d, gfn);                  /* gfn is fault protected */
 
@@ -1159,7 +1149,8 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     return 0;
 }
 
-int memory_move(struct domain *d, unsigned long gfn, unsigned long node)
+unsigned long memory_move(struct domain *d, unsigned long gfn,
+                          unsigned long node)
 {
     unsigned int memflags;
     struct page_info *old = NULL;
@@ -1194,7 +1185,7 @@ int memory_move(struct domain *d, unsigned long gfn, unsigned long node)
 
     put_gfn(d, gfn);                                          /* put the gfn */
 
-    return 0;
+    return page_to_mfn(new);
  fail_new:
     free_domheap_pages(new, 0);
  fail_old:
@@ -1203,7 +1194,7 @@ int memory_move(struct domain *d, unsigned long gfn, unsigned long node)
     if ( assign_pages(d, old, 0, MEMF_no_refcount) )
         BUG();
  fail_gfn:
-    return -1;
+    return INVALID_MFN;
 }
 #endif /* BIGOS_MEMORY_MOVE */
 

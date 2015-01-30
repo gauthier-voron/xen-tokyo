@@ -11,18 +11,19 @@
 #include <xc_private.h>
 
 
-#define HYPERCALL_CMD_START_MONITORING   ((unsigned long) -7)
-#define HYPERCALL_CMD_STOP_MONITORING    ((unsigned long) -8)
-#define HYPERCALL_CMD_DO_MIGRATION       ((unsigned long) -9)
+#define HYPERCALL_CMD_START_MONITORING   ((unsigned long)  -7)
+#define HYPERCALL_CMD_STOP_MONITORING    ((unsigned long)  -8)
+#define HYPERCALL_CMD_DECIDE_MIGR        ((unsigned long)  -9)
+#define HYPERCALL_CMD_PERFORM_MIGR       ((unsigned long) -10)
 
 
 static void usage(FILE *stream)
 {
-	fprintf(stream, "Usage: xen-automem [ option... ] interval\n"
+	fprintf(stream, "Usage: xen-automem [ option... ] decide [ perform ]\n"
 		"Communicate with Xen to perform memory migration accordingly "
 		"to the need of the\nrunning HVM guests. Communicate with Xen "
-		"throught hypercalls every specified\ninterval (in "
-		"milliseconds\n\n");
+		"throught hypercalls every specified\ninterval for decisions "
+		"and actual migrations (in milliseconds)\n\n");
 	fprintf(stream, "Options:\n  -h, -?, --help                   "
 		"display this help message, then exit\n"
 		"                                   immediately\n\n"
@@ -37,7 +38,8 @@ static void usage(FILE *stream)
 		"                                   which can be "
 		"candidate for migration, where\n"
 		"                                   hottest pages "
-		"have more priority\n\n"
+		"have more priority\n\n");
+	fprintf(stream,
 		"  -q, --enqueued size              specify the "
 		"amount of page which can be\n"
 		"                                   migrated per "
@@ -56,10 +58,21 @@ static void usage(FILE *stream)
 		"to be migrated, and if\n"
 		"                                   the hotlists are "
 		"flushed after a migration\n\n"
-		"  -r --maxtries                    specify the amount of "
+		"  -r, --maxtries count             specify the amount of "
 		"hypercall a migration\n"
 		"                                   query can stay queued "
-		"before to be aborted\n");
+		"before to be aborted\n\n"
+		"  -s, --sampling rate              specify the sampling rate "
+		"where a low rate\n"
+		"                                   indicates frequent "
+		"samples\n\n"
+		"  -o, --order order:reset          specify the granularity "
+		"of the migrations to\n"
+		"                                   perform where 0 is 4K, 1 "
+		"is 8K, ... and the\n"
+		"		                   reset time (in ms) before "
+		"to apply this\n"
+		"		                   order for a same block\n");
 }
 
 static void version(FILE *stream)
@@ -90,7 +103,7 @@ static int hypercall(unsigned long command, unsigned long *args, int *ret)
     DECLARE_HYPERCALL;
 
     if (xch == NULL)
-	    return -1;
+    	    return -1;
 
     hypercall.op = __HYPERVISOR_xen_version;
     hypercall.arg[0] = command;
@@ -132,10 +145,11 @@ static void sighandler(int signum __attribute__((unused)))
 	continue_migration = 0;
 }
 
-static void perform_hypercalls(unsigned long *params, unsigned long interval)
+static void perform_hypercalls(unsigned long *params, unsigned long decide,
+			       unsigned long perform)
 {
 	int ret;
-	unsigned long now, goal;
+	unsigned long now, goal, goal_decide, goal_perform;
 	struct timespec ts;
 	struct sigaction sigact;
 
@@ -155,23 +169,43 @@ static void perform_hypercalls(unsigned long *params, unsigned long interval)
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 	now = ts.tv_sec * 1000 + ts.tv_nsec / 1000000ul;
-	goal = now;
+	goal_decide = now;
+	goal_perform = now;
 
 	while (continue_migration) {
 		clock_gettime(CLOCK_REALTIME, &ts);
 		now = ts.tv_sec * 1000 + ts.tv_nsec / 1000000ul;
 
-		while (goal <= now)
-			goal += interval;
+		if (goal_perform <= now) {
+			if (hypercall(HYPERCALL_CMD_PERFORM_MIGR, NULL, &ret))
+				error("failed to communicate with Xen");
+			if (ret != 0)
+				break;
+		}
+
+		if (goal_decide <= now) {
+			if (hypercall(HYPERCALL_CMD_DECIDE_MIGR, NULL, &ret))
+				error("failed to communicate with Xen");
+			if (ret != 0)
+				break;
+		}
+
+
+		clock_gettime(CLOCK_REALTIME, &ts);
+		now = ts.tv_sec * 1000 + ts.tv_nsec / 1000000ul;
+
+		while (goal_decide <= now)
+			goal_decide += decide;
+		while (goal_perform <= now)
+			goal_perform += perform;
+
+		goal = goal_perform;
+		if (goal_decide < goal)
+			goal = goal_decide;
 
 		ts.tv_sec = ((goal - now) / 1000);
 		ts.tv_nsec = ((goal - now) % 1000) * 1000000ul;
 		nanosleep(&ts, NULL);
-
-		if (hypercall(HYPERCALL_CMD_DO_MIGRATION, NULL, &ret) != 0)
-			error("failed to communicate with Xen");
-		if (ret != 0)
-			break;
 	}
 	
 	if (hypercall(HYPERCALL_CMD_STOP_MONITORING, NULL, &ret) != 0)
@@ -185,12 +219,15 @@ int main(int argc, char * const* argv)
 	int c;
 	unsigned char tracked_opt = 0, candidates_opt = 0, enqueued_opt = 0;
 	unsigned char hotlist_opt = 0, migration_opt = 0, maxtries_opt = 0;
+	unsigned char rate_opt = 0, order_opt = 0;
 	unsigned long tracked = 512, candidates = 32, enqueued = 4;
 	unsigned long hotlist[4] = {8, 8, 1, 1024};
 	unsigned long migration[3] = {256, 90, 0};
 	unsigned long maxtries = 4;
-	unsigned long interval;
-	unsigned long hypercall_params[11];
+	unsigned long order[2] = {9, 13700};
+	unsigned long rate = 0x80000;
+	unsigned long decide, perform;
+	unsigned long hypercall_params[14];
 	
 	struct option options[] = {
 		{"help",       no_argument,       0, 'h'},
@@ -201,11 +238,14 @@ int main(int argc, char * const* argv)
 		{"hotlist",    required_argument, 0, 'l'},
 		{"migration",  required_argument, 0, 'm'},
 		{"maxtries",   required_argument, 0, 'r'},
+		{"sampling",   required_argument, 0, 's'},
+		{"order",      required_argument, 0, 'o'},
 		{ NULL,        0,                 0,  0 }
 	};
 
 	while (1) {
-		c = getopt_long(argc, argv, "h?vt:c:q:l:m:r:", options, NULL);
+		c = getopt_long(argc, argv, "h?vt:c:q:l:m:r:s:o:",
+				options, NULL);
 		if (c == -1)
 			break;
 
@@ -259,13 +299,33 @@ int main(int argc, char * const* argv)
 				error("invalid 'maxtries' parameter: '%s'",
 				      optarg);
 			break;
+		case 's':
+			if (rate_opt++ > 0)
+				error("option 'sampling' specified twice");
+			if (parse_numbers(&rate, 1, optarg) != 0)
+				error("invalid 'sampling' parameter: '%s'",
+				      optarg);
+			break;
+		case 'o':
+			if (order_opt++ > 0)
+				error("option 'order' specified twice");
+			if (parse_numbers(order, 2, optarg) != 0)
+				error("invalid 'order' parameter: '%s'",
+				      optarg);
+			break;
 		}
 	}
 
 	if (optind >= argc)
-		error("missing operand 'interval'");
-	if (parse_numbers(&interval, 1, argv[optind]) != 0 || interval == 0)
-		error("invalid operand 'interval': '%s'", argv[optind]);
+		error("missing operand 'decide'");
+	if (parse_numbers(&decide, 1, argv[optind]) != 0 || decide == 0)
+		error("invalid operand 'decide': '%s'", argv[optind]);
+
+	if (optind + 1 >= argc)
+		perform = decide;
+	else if (parse_numbers(&perform, 1, argv[optind+1]) != 0
+		 || perform == 0)
+		error("invalid operand 'perform': '%s'", argv[optind+1]);
 
 	hypercall_params[0]  = tracked;
 	hypercall_params[1]  = candidates;
@@ -278,8 +338,11 @@ int main(int argc, char * const* argv)
 	hypercall_params[8]  = migration[1];
 	hypercall_params[9]  = migration[2];
 	hypercall_params[10] = maxtries;
+	hypercall_params[11] = rate;
+	hypercall_params[12] = order[0];
+	hypercall_params[13] = order[1] * 1000000ul;  /* ms to ns */
 
-	perform_hypercalls(hypercall_params, interval);
+	perform_hypercalls(hypercall_params, decide, perform);
 
 	return EXIT_SUCCESS;
 }

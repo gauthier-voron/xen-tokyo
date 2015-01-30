@@ -70,7 +70,7 @@ static unsigned char minimum_score;
 static unsigned char flush_after_refill;
 
 
-#ifdef BIGOS_STATS
+#ifdef BIGOS_MORE_STATS
 
 static void stats_print_hotlists_quartiles(void)
 {
@@ -165,7 +165,7 @@ static void stats_print_pool_quartiles(void)
 #define stats_print_hotlists_quartiles()     {}
 #define stats_print_pool_quartiles()         {}
 
-#endif
+#endif /* ifdef BIGOS_MORE_STATS */
 
 
 /*

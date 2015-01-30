@@ -47,15 +47,38 @@ int monitor_migration_setcriterias(unsigned int min_node_score,
  */
 int monitor_migration_setrules(unsigned int maxtries);
 
+/*
+ * Set the sampling rate of memory access.
+ * More the rate is low, more the sampling are precise about what memory access
+ * are done, but more important is the sampling overhead.
+ * Return 0 in case of success.
+ */
+int monitor_migration_setrate(unsigned long rate);
+
+/*
+ * Set the size order of migrated pages and the reset time for migration.
+ * The order X means (1 << X) pages are moved at each migration. If a
+ * migration occurs less than the reset time after a migration of the same
+ * block of physical addresses, then only one page is moved instead.
+ * Return 0 in case of success.
+ */
+int monitor_migration_setorder(unsigned long order, unsigned long reset);
+
 
 /*
  * Perform a decision about what page to migrate and place these pages in a
  * migration queue.
- * Also do migrate the pages in the migration queues which are ready to be
- * migrated.
  * Return 0 in case of success.
  */
 int decide_migration(void);
+
+/*
+ * Perform actual migration basing on what have been decided previously.
+ * Look in the migration queue for the pages planned which are ready.
+ * Return 0 in case of success.
+ */
+int perform_migration(void);
+
 
 /*
  * Start the monitoring of the system.
@@ -71,6 +94,17 @@ int start_monitoring(void);
  * allocated by start_monitoring().
  */
 void stop_monitoring(void);
+
+
+/*
+ * Collect statistics over memory usage during monitoring.
+ * Given an mfn, return the count of memory (uncached) access, cached access,
+ * memory migrations and the next mfn having one of these fields non-zero.
+ * Return 0 in case of success.
+ */
+int mstats_get_page(unsigned long mfn, unsigned long *memory,
+		    unsigned long *cache, unsigned long *moves,
+		    unsigned long *next);
 
 
 #endif

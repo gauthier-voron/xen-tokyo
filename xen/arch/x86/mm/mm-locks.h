@@ -57,6 +57,9 @@ do {                                                    \
     }                                                   \
 } while(0)
 
+#define __check_lock_level_safe(l)		\
+	(__get_lock_level() <= (l))
+
 #define __set_lock_level(l)         \
 do {                                \
     __get_lock_level() = (l);       \
@@ -145,7 +148,8 @@ static inline void _mm_read_lock(mm_rwlock_t *l, int level)
 
 static inline int _mm_read_trylock(mm_rwlock_t *l, int level)
 {
-    __check_lock_level(level);
+    if ( !__check_lock_level_safe(level) )
+	return 0;
     return read_trylock(&l->lock);
 }
 

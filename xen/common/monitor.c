@@ -8,9 +8,14 @@
 #include <xen/config.h>
 #include <xen/hotlist.h>
 #include <xen/lib.h>
+#include <xen/mcooldown.h>
 #include <xen/migration.h>
 #include <xen/monitor.h>
 #include <xen/percpu.h>
+#include <xen/rbtree.h>
+#include <xen/sched.h>
+
+#include <asm/event.h>
 
 
 struct migration_query
@@ -20,6 +25,7 @@ struct migration_query
     unsigned long   gfn;
     struct domain  *domain;
     unsigned int    tries;
+    struct rb_node  rbnode;
 };
 
 
@@ -29,9 +35,13 @@ static DEFINE_PER_CPU(unsigned long, migration_engine_owner);
 #define OWNER_NONE      0
 #define OWNER_SAMPLER   1
 #define OWNER_DECIDER   2
+#define OWNER_MIGRATOR  3
 
-static struct migration_query *migration_queue;
+static struct rb_root          migration_tree;
+static unsigned long           migration_alloc;
+static struct migration_query *migration_pool;
 
+static struct mcooldown  migration_cooldown;
 
 static unsigned long  monitor_tracked = BIGOS_MONITOR_TRACKED;
 static unsigned long  monitor_candidate = BIGOS_MONITOR_CANDIDATE;
@@ -44,6 +54,9 @@ static unsigned int   monitor_min_node_score = BIGOS_MONITOR_MIN_NODE_SCORE;
 static unsigned int   monitor_min_node_rate = BIGOS_MONITOR_MIN_NODE_RATE;
 static unsigned char  monitor_flush_after_refill = BIGOS_MONITOR_FLUSH;
 static unsigned int   monitor_maxtries = BIGOS_MONITOR_MAXTRIES;
+static unsigned long  monitor_rate = BIGOS_MONITOR_RATE;
+static unsigned long  monitor_order = BIGOS_MONITOR_ORDER;
+static unsigned long  monitor_reset = BIGOS_MONITOR_RESET;
 
 
 #ifdef BIGOS_STATS
@@ -59,6 +72,8 @@ static DEFINE_PER_CPU(unsigned long, sampling_count);  /* IBS/PEBS count    */
 static DEFINE_PER_CPU(s_time_t, sampling_total_time);  /* IBS/PEBS total ns */
 static DEFINE_PER_CPU(s_time_t, sampling_accounting_time);    /* hotlist ns */
 static DEFINE_PER_CPU(s_time_t, sampling_probing_time);/* info gathering ns */
+static DEFINE_PER_CPU(unsigned long, probing_count);       /* # pfn probing */
+
 
 static s_time_t         decision_total_time = 0;       /* planning time  ns */
 static s_time_t         listwalk_total_time = 0;       /* popping time   ns */
@@ -69,8 +84,9 @@ static unsigned long    migration_planned = 0;     /* # page in info_buffer */
 static unsigned long    migration_tries = 0;       /* # memory_move call */
 static unsigned long    migration_succeed = 0;     /* # memory_move return 0 */
 static unsigned long    migration_aborted = 0;     /* # maxtries cancel */
+static unsigned long    migration_nomove = 0;      /* # already good node */
 
-static void reset_stats(void)
+static void stats_reset(void)
 {
     int cpu;
 
@@ -80,6 +96,7 @@ static void reset_stats(void)
         per_cpu(sampling_accounting_time, cpu) = 0;
         per_cpu(sampling_probing_time, cpu) = 0;
         per_cpu(sampling_count, cpu) = 0;
+        per_cpu(probing_count, cpu) = 0;
     }
     decision_count = 0;
     decision_total_time = 0;
@@ -89,6 +106,7 @@ static void reset_stats(void)
     migration_tries = 0;
     migration_succeed = 0;
     migration_aborted = 0;
+    migration_nomove = 0;
     stats_start = 0;
     stats_end = 0;
 }
@@ -105,7 +123,8 @@ static void reset_stats(void)
 #define stats_stop_accounting()                                         \
     this_cpu(sampling_accounting_time) += (NOW() - this_cpu(time_counter_1))
 
-#define stats_start_probing()      this_cpu(time_counter_1) = NOW()
+#define stats_start_probing()                   \
+    this_cpu(time_counter_1) = NOW(), this_cpu(probing_count)++
 #define stats_stop_probing()                                            \
     this_cpu(sampling_probing_time) += (NOW() - this_cpu(time_counter_1))
 
@@ -122,11 +141,14 @@ static void reset_stats(void)
 #define stats_account_migration_plan()          \
     migration_planned++
 
-#define stats_account_migration_abort()          \
+#define stats_account_migration_abort()         \
     migration_aborted++
 
+#define stats_account_migration_nomove()        \
+    migration_nomove++
+
 #define stats_account_migration_try(ret)            \
-    migration_tries++, migration_succeed += (!(ret))
+    migration_tries++, migration_succeed += (ret)
 
 
 #define MIN_MAX_AVG(percpu, min, max, avg)          \
@@ -146,7 +168,7 @@ static void reset_stats(void)
         avg /= ____count;                           \
     }
 
-static void display_stats(void)
+static void stats_display(void)
 {
     unsigned long min, max, avg;
 
@@ -160,6 +182,8 @@ static void display_stats(void)
     printk("sampling total time          %lu/%lu/%lu ns\n", min, max, avg);
     MIN_MAX_AVG(sampling_accounting_time, min, max, avg);
     printk("sampling accounting time     %lu/%lu/%lu ns\n", min, max, avg);
+    MIN_MAX_AVG(probing_count, min, max, avg);
+    printk("sampling probing count       %lu/%lu/%lu\n", min, max, avg);
     MIN_MAX_AVG(sampling_probing_time, min, max, avg);
     printk("sampling probing time        %lu/%lu/%lu ns\n", min, max, avg);
     printk("\n");
@@ -171,6 +195,7 @@ static void display_stats(void)
     printk("migration tries              %lu\n", migration_tries);
     printk("migration succeed            %lu\n", migration_succeed);
     printk("migration aborted            %lu\n", migration_aborted);
+    printk("migration useless            %lu\n", migration_nomove);
     printk("\n");
 
     MIN_MAX_AVG(sampling_total_time, min, max, avg);
@@ -179,10 +204,10 @@ static void display_stats(void)
             * 100) / (stats_end - stats_start + 1));
 }
 
-#else
+#else /* ifndef BIGOS_STATS */
 
-#define reset_stats()                      {}
-#define sstats_tart()                      {}
+#define stats_reset()                      {}
+#define stats_start()                      {}
 #define stats_end()                        {}
 #define stats_start_sampling()             {}
 #define stats_stop_sampling()              {}
@@ -196,10 +221,121 @@ static void display_stats(void)
 #define stats_stop_migration()             {}
 #define stats_account_migration_plan()     {}
 #define stats_account_migration_abort()    {}
+#define stats_account_migration_nomove()   {}
 #define stats_account_migration_try(ret)   {}
-#define display_stats()                    {}
+#define stats_display()                    {}
 
-#endif
+#endif /* ifndef BIGOS_STATS */
+
+
+#ifdef BIGOS_MEMORY_STATS
+
+struct mstats_page
+{
+    unsigned long   memory_access : 27;
+    unsigned long   cache_access  : 27;
+    unsigned long   moves         : 10;
+};
+
+static struct mstats_page *mstats_pool;
+
+
+static int mstats_alloc(void)
+{
+    int ret = 0;
+	unsigned long order, size = total_pages;
+
+    order = get_order_from_bytes(size * sizeof(struct mstats_page));
+	mstats_pool = alloc_xenheap_pages(order, 0);
+
+    printk("Allocated %lu bytes for memory statistics\n",
+           size * sizeof(struct mstats_page));
+
+	if ( mstats_pool == NULL )
+		ret = -1;
+	return ret;
+}
+
+static void mstats_init(void)
+{
+    unsigned long i;
+
+    for (i=0; i<total_pages; i++)
+    {
+        mstats_pool[i].memory_access = 0;
+        mstats_pool[i].cache_access = 0;
+        mstats_pool[i].moves = 0;
+    }
+
+    printk("Initialized %lu entries for memory statistics\n", total_pages);
+}
+
+static int mstats_reset(void)
+{
+    int ret = 0;
+
+    if ( mstats_pool == NULL )
+        ret = mstats_alloc();
+    if ( ret == 0 )
+        mstats_init();
+
+    return ret;
+}
+
+
+static inline void mstats_memory_access(unsigned long mfn)
+{
+    mstats_pool[mfn].memory_access++;
+}
+
+static inline void mstats_cache_access(unsigned long mfn)
+{
+    mstats_pool[mfn].cache_access++;
+}
+
+static inline void mstats_memory_moved(unsigned long mfn)
+{
+    mstats_pool[mfn].moves++;
+}
+
+int mstats_get_page(unsigned long mfn, unsigned long *memory,
+                    unsigned long *cache, unsigned long *moves,
+                    unsigned long *next)
+{
+    if ( mstats_pool == NULL )
+        return -1;
+    if ( mfn >= total_pages )
+        return -1;
+
+    *memory = mstats_pool[mfn].memory_access;
+    *cache = mstats_pool[mfn].cache_access;
+    *moves = mstats_pool[mfn].moves;
+
+    *next = mfn;
+    for (mfn++; mfn<total_pages; mfn++)
+    {
+        if ( mstats_pool[mfn].memory_access != 0 )
+            break;
+        if ( mstats_pool[mfn].cache_access != 0 )
+            break;
+        if ( mstats_pool[mfn].moves != 0 )
+            break;
+    }
+
+    if ( mfn < total_pages )
+        *next = mfn;
+
+    return 0;
+}
+
+#else /* ifndef BIGOS_MEMORY_STATS */
+
+#define mstats_reset()                     (0)
+#define mstats_memory_access(mfn)          do { } while (0)
+#define mstats_cache_access(mfn)           do { } while (0)
+#define mstats_memory_moved(mfn)           do { } while (0)
+
+#endif /* ifndef BIGOS_MEMORY_STATS */
 
 
 static int alloc_migration_queue(void)
@@ -208,9 +344,9 @@ static int alloc_migration_queue(void)
 	unsigned long order, size = monitor_enqueued;
 
     order = get_order_from_bytes(size * sizeof(struct migration_query));
-	migration_queue = alloc_xenheap_pages(order, 0);
+	migration_pool = alloc_xenheap_pages(order, 0);
 
-	if ( migration_queue == NULL )
+	if ( migration_pool == NULL )
 		ret = -1;
 	return ret;
 }
@@ -219,94 +355,202 @@ static void init_migration_queue(void)
 {
     unsigned long i;
 
+    migration_tree = RB_ROOT;
+    migration_alloc = 0;
+
     for (i=0; i<monitor_enqueued; i++)
-        migration_queue[i].mfn = INVALID_MFN;
+    {
+        migration_pool[i].mfn = INVALID_MFN;
+        RB_CLEAR_NODE(&migration_pool[i].rbnode);
+    }
 }
 
 static void free_migration_queue(void)
 {
 	unsigned long order, size = monitor_enqueued;
 
-    if ( migration_queue == NULL )
+    if ( migration_pool == NULL )
         return;
-	order = get_order_from_bytes(size * sizeof(struct hotlist_entry));
+	order = get_order_from_bytes(size * sizeof(struct migration_query));
 
-	free_xenheap_pages(migration_queue, order);
-    migration_queue = NULL;
+	free_xenheap_pages(migration_pool, order);
+    migration_pool = NULL;
 }
 
 
 
+static struct migration_query *find_migration_query(unsigned long mfn)
+{
+    struct rb_node *node = migration_tree.rb_node;
+    struct migration_query *query = NULL;
+
+    while ( node )
+    {
+        query = container_of(node, struct migration_query, rbnode);
+
+        if ( mfn < query->mfn )
+            node = node->rb_left;
+        else if ( mfn > query->mfn )
+            node = node->rb_right;
+        else
+            break;
+    }
+
+    return query;
+}
+
+static void insert_migration_query(struct migration_query *new,
+                                   struct migration_query *parent)
+{
+    struct rb_node *parent_node, **parent_ptr;
+
+    if ( unlikely(parent == NULL) )
+    {
+        parent_node = NULL;
+        parent_ptr = &migration_tree.rb_node;
+    }
+    else
+    {
+        parent_node = &parent->rbnode;
+        if ( new->mfn < parent->mfn )
+            parent_ptr = &parent_node->rb_left;
+        else
+            parent_ptr = &parent_node->rb_right;
+    }
+
+    rb_link_node(&new->rbnode, parent_node, parent_ptr);
+    rb_insert_color(&new->rbnode, &migration_tree);
+}
 
 static void fill_migration_queue(struct migration_buffer *buffer)
 {
-    unsigned long i, j, slot;
+    unsigned long i, mfn;
+    struct migration_query *query, *parent;
 
     for (i=0; i<buffer->size; i++)
     {
-        slot = monitor_enqueued;
+        mfn = buffer->migrations[i].pgid;
+        query = find_migration_query(mfn);
 
-        for (j=0; j<monitor_enqueued; j++)
-            if ( migration_queue[j].mfn == buffer->migrations[i].pgid )
-                break;
-            else if ( migration_queue[j].mfn == INVALID_MFN )
-                slot = j;
-
-        if ( j != monitor_enqueued )         /* entry already present */
+        if ( query != NULL && query->mfn == mfn )
             continue;
 
         stats_account_migration_plan();
 
-        if ( slot == monitor_enqueued )      /* no more empty slot */
-            break;
+        if ( migration_alloc == monitor_enqueued )
+            continue;
 
-        migration_queue[slot].mfn = buffer->migrations[i].pgid;
-        migration_queue[slot].node = buffer->migrations[i].node;
-        migration_queue[slot].gfn = INVALID_GFN;
-        migration_queue[slot].domain = NULL;
-        migration_queue[slot].tries = 0;
+        parent = query;
+        query = &migration_pool[migration_alloc];
+        migration_alloc++;
+
+        query->mfn = mfn;
+        query->node = buffer->migrations[i].node;
+        query->gfn = INVALID_GFN;
+        query->domain = NULL;
+        query->tries = 0;
+
+        insert_migration_query(query, parent);
     }
+}
+
+static void gc_migration_queue(void)
+{
+    unsigned long i = 0, j = migration_alloc;
+
+    while ( i < j )
+        if ( migration_pool[i].mfn == INVALID_MFN )
+        {
+            while ( j > i && migration_pool[j-1].mfn == INVALID_MFN )
+                j--;
+
+            if ( i == j )
+                break;
+
+            j--;
+
+            migration_pool[i] = migration_pool[j];
+            rb_replace_node(&migration_pool[j].rbnode,
+                            &migration_pool[i].rbnode, &migration_tree);
+        }
+        else
+        {
+            i++;
+        }
+
+    migration_alloc = j;
 }
 
 static void drain_migration_queue(void)
 {
-    unsigned long i;
-    unsigned long nid;
-    int ret;
+    struct migration_query *query;
+    unsigned long i, j, nid;
+    unsigned long ret, nmfn;
 
-    for (i=0; i<monitor_enqueued; i++)
+    /*
+     * Perform the garbage collection from the previous call to drain
+     * migration_queue().
+     * This allow to exit immediately if the call to hypercall_preemt_check()
+     * tells us the domain has something important to do.
+     */
+
+    gc_migration_queue();
+
+    for (i=0; i<migration_alloc; i++)
     {
-        if ( migration_queue[i].mfn == INVALID_MFN )
-            continue;
+        if ( hypercall_preempt_check() )
+            break;
 
-        nid = phys_to_nid(migration_queue[i].mfn << PAGE_SHIFT);
-        if ( migration_queue[i].node == nid )
+        query = &migration_pool[i];
+
+        nid = phys_to_nid(query->mfn << (monitor_order + PAGE_SHIFT));
+        if ( query->node == nid )
         {
-            register_page_moved(migration_queue[i].mfn);
-            migration_queue[i].mfn = INVALID_MFN;
-            continue;
+            stats_account_migration_nomove();
+            goto done;
         }
 
-        if ( migration_queue[i].gfn == INVALID_GFN )
+        if ( check_cooldown(&migration_cooldown, query->mfn) )
         {
-            if ( ++migration_queue[i].tries >= monitor_maxtries )
+            goto garbage;
+        }
+
+        if ( query->gfn == INVALID_GFN )
+        {
+            if ( ++(query->tries) >= monitor_maxtries )
             {
-                migration_queue[i].mfn = INVALID_MFN;
                 stats_account_migration_abort();
+                goto garbage;
             }
             continue;
         }
 
-        stats_start_migration();
-        ret = memory_move(migration_queue[i].domain, migration_queue[i].gfn,
-                          migration_queue[i].node);
-        stats_stop_migration();
+        query->gfn <<= monitor_order;
+        query->mfn <<= monitor_order;
+        nmfn = INVALID_MFN;
 
-        stats_account_migration_try(ret);
-        register_page_moved(migration_queue[i].mfn);
-        migration_queue[i].mfn = INVALID_MFN;
+        for (j=0; j<(1 << monitor_order); j++)
+        {
+            ret = memory_move(query->domain, query->gfn + j, query->node);
+            stats_account_migration_try(ret != INVALID_MFN);
+
+            if ( ret != INVALID_MFN )
+                nmfn = ret;
+
+            mstats_memory_moved(query->mfn + j);
+        }
+
+        if ( nmfn != INVALID_MFN )
+            arm_mcooldown(&migration_cooldown, nmfn >> monitor_order);
+
+     done:
+        register_page_moved(query->mfn >> monitor_order);
+     garbage:
+        rb_erase(&query->rbnode, &migration_tree);
+        query->mfn = INVALID_MFN;
     }
 }
+
 
 int decide_migration(void)
 {
@@ -321,8 +565,6 @@ int decide_migration(void)
                         OWNER_DECIDER) != OWNER_NONE )
             ;
 
-    drain_migration_queue();
-
     stats_start_decision();
     buffer = refill_migration_buffer();
     fill_migration_queue(buffer);
@@ -330,6 +572,28 @@ int decide_migration(void)
 
     for_each_online_cpu ( cpu )
         cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_DECIDER,
+                OWNER_NONE);
+    return 0;
+}
+
+int perform_migration(void)
+{
+    int cpu;
+
+    if ( !monitoring_started )
+        return -1;
+
+    for_each_online_cpu ( cpu )
+        while ( cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_NONE,
+                        OWNER_MIGRATOR) != OWNER_NONE )
+            ;
+
+    stats_start_migration();
+    drain_migration_queue();
+    stats_stop_migration();
+
+    for_each_online_cpu ( cpu )
+        cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_MIGRATOR,
                 OWNER_NONE);
     return 0;
 }
@@ -385,12 +649,29 @@ static void disable_monitoring_pebs(void)
     register_page_access_cpu(23, 3);
 
     buffer = refill_migration_buffer();
+    buffer->migrations[0].node = 1;
+    buffer->migrations[2].node = 2;
+
     for (i=0; i<buffer->size; i++)
         printk("migration of %lu to %u\n", buffer->migrations[i].pgid,
                buffer->migrations[i].node);
+
+    fill_migration_queue(buffer);
+    drain_migration_queue();
     fill_migration_queue(buffer);
 
     free_migration_engine();
+
+    mstats_memory_access(48);
+    mstats_memory_access(1031);
+    mstats_memory_access(4124);
+
+    mstats_cache_access(48);
+    mstats_cache_access(3445);
+    mstats_cache_access(7564);
+
+    mstats_memory_moved(3453);
+    mstats_memory_moved(8343);
 
     /* pebs_disable(); */
     /* pebs_release(); */
@@ -398,7 +679,8 @@ static void disable_monitoring_pebs(void)
 
 static void ibs_nmi_handler(struct ibs_record *record)
 {
-    unsigned long i, vaddr, gfn, ogfn, mfn;
+    unsigned long vaddr, gfn, ogfn, mfn;
+    struct migration_query *query;
     uint32_t pfec;
 
     if ( cmpxchg(&this_cpu(migration_engine_owner), OWNER_NONE,
@@ -419,10 +701,28 @@ static void ibs_nmi_handler(struct ibs_record *record)
     vaddr = record->data_linear_address;
     mfn = record->data_physical_address >> PAGE_SHIFT;
 
-    for (i=0; i<monitor_enqueued; i++)
+    if ( record->cache_infos & IBS_RECORD_DCMISS )
+        mstats_memory_access(mfn);
+    else
+        mstats_cache_access(mfn);
+
+    mfn >>= monitor_order;
+
+    query = find_migration_query(mfn);
+    if ( query != NULL && query->mfn == mfn && query->gfn == INVALID_GFN )
     {
-        if ( migration_queue[i].mfn != mfn )
-            continue;
+
+        /*
+         * This lines reject the sample if the current cpu is performing an
+         * asynchronous context switch.
+         * If so, we are likely going to receive an IPI during the call to
+         * try_paging_gva_to_gfn() for performing remote TLB flush.
+         * This will trigger a synchronous context_switch while we are looking
+         * the guest page table, which would be fatal.
+         */
+
+        if ( this_cpu(curr_vcpu) != current )
+            goto out;
 
         local_irq_enable();
         pfec = PFEC_page_present;
@@ -434,10 +734,9 @@ static void ibs_nmi_handler(struct ibs_record *record)
         local_irq_disable();
 
         ogfn = INVALID_GFN;
-
-        if ( cmpxchg(&migration_queue[i].gfn, ogfn, gfn) != ogfn )
-            continue;
-        migration_queue[i].domain = current->domain;
+        gfn >>= monitor_order;
+        if ( cmpxchg(&query->gfn, ogfn, gfn) == ogfn )
+            query->domain = current->domain;
     }
 
     stats_start_accounting();
@@ -458,7 +757,7 @@ static int enable_monitoring_ibs(void)
         return ret;
 
     ibs_setevent(IBS_EVENT_OP);
-    ibs_setrate(0x1000000);
+    ibs_setrate(monitor_rate);
     ibs_sethandler(ibs_nmi_handler);
     ibs_enable();
 
@@ -543,20 +842,57 @@ int monitor_migration_setrules(unsigned int maxtries)
     return 0;
 }
 
+int monitor_migration_setrate(unsigned long rate)
+{
+    monitor_rate = rate;
+
+    if ( monitoring_started )
+    {
+        if ( ibs_capable() )
+            ibs_setrate(rate);
+        else if ( pebs_capable() )
+            ;
+        else
+            return -1;
+        return 0;
+    }
+
+    return 0;
+}
+
+int monitor_migration_setorder(unsigned long order, unsigned long reset)
+{
+    int restart = monitoring_started;
+
+    stop_monitoring();
+    monitor_order = order;
+    monitor_reset = reset;
+
+    if ( restart )
+        return start_monitoring();
+    return 0;
+}
+
 
 int start_monitoring(void)
 {
     if ( monitoring_started )
         return -1;
-    reset_stats();
+
+    stats_reset();
+    if ( mstats_reset() != 0 )
+        goto err;
 
     if ( alloc_migration_queue() != 0 )
         goto err;
+    if ( alloc_mcooldown(&migration_cooldown, total_pages >> monitor_order) )
+        goto err_queue;
     if ( alloc_migration_engine(monitor_tracked, monitor_candidate,
                                 monitor_enqueued) != 0 )
-        goto err_queue;
+        goto err_mcooldown;
 
     init_migration_queue();
+    init_mcooldown(&migration_cooldown, monitor_reset);
     init_migration_engine();
 
     param_migration_lists(monitor_enter, monitor_increment,
@@ -576,6 +912,8 @@ out:
     return 0;
 err_engine:
     free_migration_engine();
+err_mcooldown:
+    free_mcooldown(&migration_cooldown);
 err_queue:
     free_migration_queue();
 err:
@@ -584,8 +922,11 @@ err:
 
 void stop_monitoring(void)
 {
+    int cpu;
+
     if ( !monitoring_started )
         return;
+
     stats_end();
 
     if ( ibs_capable() )
@@ -595,10 +936,24 @@ void stop_monitoring(void)
 
     monitoring_started = 0;
 
+    /*
+     * Ensure no NMI interrupt is occuring before to free the data structures
+     * of monitoring.
+     * No need to really lock because IBS/PEBS is disabled but an interrupt
+     * could start before this function execution, so just wait the locks are
+     * free.
+     */
+
+    for_each_online_cpu ( cpu )
+        while ( cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_NONE,
+                        OWNER_NONE) != OWNER_NONE )
+            ;
+
     free_migration_engine();
+    free_mcooldown(&migration_cooldown);
     free_migration_queue();
 
-    display_stats();
+    stats_display();
 }
 
  /*

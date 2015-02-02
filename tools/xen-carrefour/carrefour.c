@@ -17,7 +17,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
 #include "carrefour.h"
-#include <gsl/gsl_statistics.h>
+#include "xencarrefour.h"
+/* #include <gsl/gsl_statistics.h> */
 #include <sys/sysinfo.h>
 
 static int sleep_time = 1*TIME_SECOND;     /* Profile by sleep_time useconds chunks */

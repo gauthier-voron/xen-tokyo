@@ -1,21 +1,19 @@
-LIBGSL = $(shell gsl-config --libs)
-
 CFLAGS = -Wall
-LDLIBS = -lpthread -lnuma ${LIBGSL}
+LDLIBS = -lpthread
 
 .PHONY: all clean
 
-all: carrefour tags
+all: carrefour
 
-carrefour: carrefour.c carrefour.h
+carrefour: carrefour.c carrefour.h xencarrefour.c xencarrefour.h
 
-tags: carrefour.c carrefour.h
+tags: carrefour.c carrefour.h xencarrefour.c xencarrefour.h
 	ctags --totals `find . -name '*.[ch]'`
 	cscope -b -q -k -R -s.
 
 clean_tags:
-	rm cscope.*
-	rm tags
+	-rm cscope.*
+	-rm tags
 
 clean: clean_tags
-	rm -f carrefour *o
+	-rm -f carrefour *o

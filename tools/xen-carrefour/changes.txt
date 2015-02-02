@@ -1,0 +1,14 @@
+Makefile:
+- remove libgsl
+- remove libnuma
+
+carrefour.h:
+- remove <numa.h>
+
+carrefour.c:
+- quoted <gsl/gsl_statistics.h>
+- new include <xencarrefour.h>
+
+xencarrefour.{h,c}:
+- implement minimal set of libnuma
+- temp implement libgsl

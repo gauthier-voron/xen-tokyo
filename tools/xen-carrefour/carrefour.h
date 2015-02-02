@@ -43,7 +43,6 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <dirent.h>
-#include <numa.h>
 
 #define MAX_CORE                64
 #define TIME_SECOND             1000000

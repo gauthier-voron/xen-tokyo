@@ -12,3 +12,7 @@ carrefour.c:
 xencarrefour.{h,c}:
 - implement minimal set of libnuma
 - temp implement libgsl
+- replace syscall(__NR_perf_counter_open) by xen_open_hw()
+  -> 6 counters per cpu -- multiplexing ?
+- replace read() on perfcnt by xen_read_hw()
+- implement naive and brutal multiplexing for perfctr

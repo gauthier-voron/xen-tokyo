@@ -3,6 +3,8 @@
 
 
 #include <stdlib.h>
+#include <linux/perf_event.h>
+#include "carrefour.h"
 
 
 struct bitmask
@@ -22,6 +24,12 @@ int numa_bitmask_isbitset(const struct bitmask *bmp, unsigned int i);
 void numa_bitmask_free(struct bitmask *bmp);
 
 int numa_num_configured_nodes(void);
+
+
+int xen_open_hwc(const struct perf_event_attr *hw_event, pid_t pid, int cpu,
+		 int group_fd, unsigned long flags);
+
+int xen_read_hwc(int hwc, struct perf_read_ev *hw_read);
 
 
 double gsl_stats_mean(const double data[], size_t stride, size_t n);

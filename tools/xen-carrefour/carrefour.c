@@ -205,29 +205,31 @@ static int cpu_of_node(int node) {
 }
 
 static inline void change_carrefour_state_str(char * str) {
-   if(str) {
-      FILE *ibs_ctl = fopen("/proc/inter_cntl", "w");
-      if(ibs_ctl) {
-         int len = strlen(str);
-         fwrite(str, 1, len, ibs_ctl);
-         // That's not safe. Todo check for errors
-         fclose(ibs_ctl);
-      }
-      else {
-         fprintf(stderr, "Cannot open the carrefour file. Is carrefour loaded?\n");
-      }
-   }
+   /* if(str) { */
+   /*    FILE *ibs_ctl = fopen("/proc/inter_cntl", "w"); */
+   /*    if(ibs_ctl) { */
+   /*       int len = strlen(str); */
+   /*       fwrite(str, 1, len, ibs_ctl); */
+   /*       // That's not safe. Todo check for errors */
+   /*       fclose(ibs_ctl); */
+   /*    } */
+   /*    else { */
+   /*       fprintf(stderr, "Cannot open the carrefour file. Is carrefour loaded?\n"); */
+   /*    } */
+   /* } */
+   printf("change_carrefour_state_str(%s)\n", str);
 }
 
 static inline void change_carrefour_state(char c) {
-   FILE *ibs_ctl = fopen("/proc/inter_cntl", "w");
-   if(ibs_ctl) {
-      fputc(c, ibs_ctl);
-      fclose(ibs_ctl);
-   }
-   else {
-      fprintf(stderr, "Cannot open the carrefour file. Is carrefour loaded?\n");
-   }
+   /* FILE *ibs_ctl = fopen("/proc/inter_cntl", "w"); */
+   /* if(ibs_ctl) { */
+   /*    fputc(c, ibs_ctl); */
+   /*    fclose(ibs_ctl); */
+   /* } */
+   /* else { */
+   /*    fprintf(stderr, "Cannot open the carrefour file. Is carrefour loaded?\n"); */
+   /* } */
+   printf("change_carrefour_state(%c)\n", c);
 }
 
 static long percent_running(struct perf_read_ev *last, struct perf_read_ev *prev) {
@@ -620,7 +622,8 @@ static void thread_loop() {
       usleep(sleep_time);
       for(i = 0; i < nb_nodes; i++) {
          for (j = 0; j < nb_events; j++) {
-            assert(read(fd[i*nb_events + j], &single_count, sizeof(single_count)) == sizeof(single_count));
+            /* assert(read(fd[i*nb_events + j], &single_count, sizeof(single_count)) == sizeof(single_count)); */
+            assert(xen_read_hwc(fd[i*nb_events + j], &single_count) == sizeof(single_count));
 /*            printf("[%d,%d] %ld enabled %ld running %ld%%\n", i, j,
                   single_count.time_enabled - last_counts[i*nb_events + j].time_enabled,
                   single_count.time_running - last_counts[i*nb_events + j].time_running,
@@ -691,7 +694,8 @@ static void thread_loop() {
 
 
 static long sys_perf_counter_open(struct perf_event_attr *hw_event, pid_t pid, int cpu, int group_fd, unsigned long flags) {
-   int ret = syscall(__NR_perf_counter_open, hw_event, pid, cpu, group_fd, flags);
+   /* int ret = syscall(__NR_perf_counter_open, hw_event, pid, cpu, group_fd, flags); */
+   int ret = xen_open_hwc(hw_event, pid, cpu, group_fd, flags);
 #  if defined(__x86_64__) || defined(__i386__)
    if (ret < 0 && ret > -4096) {
       errno = -ret;

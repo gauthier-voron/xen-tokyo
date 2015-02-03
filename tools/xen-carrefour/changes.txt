@@ -16,3 +16,4 @@ xencarrefour.{h,c}:
   -> 6 counters per cpu -- multiplexing ?
 - replace read() on perfcnt by xen_read_hw()
 - implement naive and brutal multiplexing for perfctr
+  -> multiplexing is done by a separated thread changing perctrs every 250ms

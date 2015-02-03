@@ -217,7 +217,7 @@ static inline void change_carrefour_state_str(char * str) {
    /*       fprintf(stderr, "Cannot open the carrefour file. Is carrefour loaded?\n"); */
    /*    } */
    /* } */
-   printf("change_carrefour_state_str(%s)\n", str);
+   /* printf("change_carrefour_state_str(%s)\n", str); */
 }
 
 static inline void change_carrefour_state(char c) {
@@ -229,7 +229,7 @@ static inline void change_carrefour_state(char c) {
    /* else { */
    /*    fprintf(stderr, "Cannot open the carrefour file. Is carrefour loaded?\n"); */
    /* } */
-   printf("change_carrefour_state(%c)\n", c);
+   /* printf("change_carrefour_state(%c)\n", c); */
 }
 
 static long percent_running(struct perf_read_ev *last, struct perf_read_ev *prev) {

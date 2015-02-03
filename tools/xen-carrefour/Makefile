@@ -1,11 +1,12 @@
 CFLAGS = -Wall
-LDLIBS = -lpthread
+LDLIBS = -lpthread -lrt -lxenctrl -lm
 
 .PHONY: all clean
 
 all: carrefour
 
-carrefour: carrefour.c carrefour.h xencarrefour.c xencarrefour.h
+carrefour: carrefour.c carrefour.h xencarrefour.c xencarrefour.h \
+           perfctr.c hypercall.c xc_private.h
 
 tags: carrefour.c carrefour.h xencarrefour.c xencarrefour.h
 	ctags --totals `find . -name '*.[ch]'`

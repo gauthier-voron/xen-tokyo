@@ -7,11 +7,15 @@
 #include "carrefour.h"
 
 
+unsigned long time_now(void);
+
+
+/* === NUMA backend ======================================================== */
+
 struct bitmask
 {
 	unsigned long arr[0];
 };
-
 
 int numa_num_configured_cpus(void);
 
@@ -26,11 +30,22 @@ void numa_bitmask_free(struct bitmask *bmp);
 int numa_num_configured_nodes(void);
 
 
+/* === Hypercall stub ====================================================== */
+
+void wrmsr(unsigned long addr, unsigned long value, int cpu);
+
+unsigned long rdmsr(unsigned long addr, int cpu);
+
+
+/* === Perf counters backend =============================================== */
+
 int xen_open_hwc(const struct perf_event_attr *hw_event, pid_t pid, int cpu,
 		 int group_fd, unsigned long flags);
 
 int xen_read_hwc(int hwc, struct perf_read_ev *hw_read);
 
+
+/* === GSL backend ========================================================= */
 
 double gsl_stats_mean(const double data[], size_t stride, size_t n);
 

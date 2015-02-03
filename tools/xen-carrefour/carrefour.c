@@ -655,15 +655,7 @@ static void thread_loop() {
       ipc(last_counts, last_counts_prev, &ipc_global, ipc_node);
 #endif
 
-      struct sysinfo info;
-      double global_mem_usage = 0;
-      if (sysinfo(&info) != 0) {
-         printf("sysinfo: error reading system statistics");
-         global_mem_usage = 0;
-      }
-      else {
-         global_mem_usage =  (double) (info.totalram-info.freeram) / (double) info.totalram * 100.;
-      }
+      double global_mem_usage = musage();
 
 
       for(i = 0; i < nb_nodes; i++) {

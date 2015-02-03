@@ -36,6 +36,8 @@ void wrmsr(unsigned long addr, unsigned long value, int cpu);
 
 unsigned long rdmsr(unsigned long addr, int cpu);
 
+double musage(void);
+
 
 /* === Perf counters backend =============================================== */
 

@@ -57,3 +57,18 @@ unsigned long rdmsr(unsigned long addr, int cpu)
 
 	return 0;
 }
+
+double musage(void)
+{
+	xc_interface *xch = xc_interface_open(0, 0, 0);
+	DECLARE_SYSCTL;
+	
+	if (xch == NULL)
+		return -1.0;
+	sysctl.cmd = XEN_SYSCTL_physinfo;
+	if (do_sysctl(xch, &sysctl) < 0)
+		return -1.0;
+
+	return 100 - 100.0 * ((double) sysctl.u.physinfo.free_pages)
+		/ ((double) sysctl.u.physinfo.total_pages);
+}

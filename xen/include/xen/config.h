@@ -138,4 +138,7 @@
 #define BIGOS_MONITOR_ORDER                         7
 #define BIGOS_MONITOR_RESET            (10000000000ul)
 
+/* Enable Xen-carrefour routines */
+#define BIGOS_CARREFOUR
+
 #endif /* __XEN_CONFIG_H__ */

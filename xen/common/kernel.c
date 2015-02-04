@@ -4,6 +4,7 @@
  * Copyright (c) 2002-2005 K A Fraser
  */
 
+#include <xen/carrefour/xen_carrefour.h>
 #include <xen/config.h>
 #include <xen/init.h>
 #include <xen/lib.h>
@@ -243,6 +244,11 @@ void __init do_initcalls(void)
 
 #ifdef BIGOS_MEMORY_STATS
 #  define HYPERCALL_BIGOS_MEMSTATS      -11
+#endif
+
+#ifdef BIGOS_CARREFOUR
+#  define HYPERCALL_BIGOS_CFR_INIT      -12
+#  define HYPERCALL_BIGOS_CFR_EXIT      -13
 #endif
 
 #ifdef BIGOS_DIRECT_MSR
@@ -640,6 +646,18 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return -1;
     }
 #endif /* BIGOS_MEMORY_STATS */
+#ifdef BIGOS_CARREFOUR
+    case HYPERCALL_BIGOS_CFR_INIT:
+    {
+        return carrefour_init_module();
+    }
+
+    case HYPERCALL_BIGOS_CFR_EXIT:
+    {
+        carrefour_exit_module();
+        return 0;
+    }
+#endif /* ifdef BIGOS_CARREFOUR */
 
     case XENVER_version:
     {

@@ -17,267 +17,12 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
-#include <xen/lib.h>
-#include <xen/string.h>
+#include <asm/msr.h>
 #include <xen/carrefour/carrefour_main.h>
-
-/* /\** */
-/*  * /proc/inter_cntl */
-/*  *\/ */
-/* static int running; */
-/* extern int enable_carrefour; */
-
-/* extern unsigned enable_replication; */
-/* extern unsigned enable_interleaving; */
-/* extern unsigned enable_migration; */
-
-/* extern unsigned sampling_rate; */
-/* #if ADAPTIVE_SAMPLING */
-/* extern unsigned sampling_rate_cheap; */
-/* extern unsigned sampling_rate_accurate; */
-/* #endif */
-/* extern unsigned long nr_accesses_node[MAX_NUMNODES]; */
-
-/* static ssize_t ibs_proc_write(struct file *file, const char __user *buf, */
-/*       size_t count, loff_t *ppos) { */
-/*    char c; */
-
-/*    if (count) { */
-/*       if (get_user(c, buf)) */
-/*          return -EFAULT; */
-/*       if (c == 'b' && !running) { */
-/*          start_profiling(); */
-/*          running = 1; */
-/*       }  */
-/*       else if (c == 'e' && running) { */
-/*          enable_carrefour = 1; */
-/*          stop_profiling(); */
-/*          running = 0; */
-/*       }  */
-/*       else if (c == 'x' && running) { */
-/*          enable_carrefour = 0; */
-/*          stop_profiling(); */
-/* #if ADAPTIVE_SAMPLING */
-/*          //printk("[ADAPTIVE] Carrefour disabled, reducing the IBS sampling rate\n"); */
-/*          sampling_rate = sampling_rate_cheap; */
-/* #endif */
-/*          start_profiling(); */
-/*       } */
-/*       else if (c == 'k' && running) { */
-/*          enable_carrefour = 0; */
-/*          stop_profiling(); */
-/*          running = 0; */
-/*       } */
-/* #if ENABLE_INTERLEAVING */
-/*       else if (c == 'i') { */
-/*          enable_interleaving = 0; */
-/*       } */
-/*       else if (c == 'I') { */
-/*          enable_interleaving = 1; */
-/*       } */
-/* #endif */
-/*       else if (c == 'T') { */
-/*          if(count > 1) { */
-/*             /\* get buffer size *\/ */
-/*             char * buf_tmp = kmalloc(count, GFP_KERNEL | __GFP_ZERO); */
-/*             char * index = buf_tmp; */
-/*             char * next_idx; */
-/*             int node = 0; */
-
-/*             if (copy_from_user(buf_tmp, buf, count)) { */
-/*                return -EFAULT; */
-/*             } */
-           
-/*             // Skip the I */
-/*             index++; */
-
-/*             for (next_idx = index; next_idx < buf_tmp + count; next_idx++) { */
-/*                if(*next_idx == ',' || next_idx == (buf_tmp + count -1)) { */
-/*                   unsigned long value; */
-/*                   if(*next_idx == ',') { */
-/*                      *next_idx = 0; */
-/*                   } */
-
-/*                   if(kstrtol(index, 10, &value) < 0) { */
-/*                      printk("Value is %s (%lu)\n", index, value);  */
-/*                      printk(KERN_WARNING "Strange bug\n"); */
-/*                      memset(&nr_accesses_node, 0, sizeof(unsigned long) * MAX_NUMNODES); */
-/*                      break; */
-/*                   } */
-/*                   nr_accesses_node[node++] = value; */
-/*                   index = next_idx+1; */
-
-/*                   //printk("Node %d --> %lu\n", node -1, nr_accesses_node[node-1]); */
-/*                } */
-/*             } */
-            
-/*             kfree(buf_tmp);  */
-/*          } */
-/*       } */
-/* #if ENABLE_REPLICATION && REPLICATION_PER_TID */
-/*       else if (c == 'Z') { */
-/*          int pid, enabled; */
-/*          int ret = sscanf(buf, "Z\t%d\t%d\n", &pid, &enabled); */
-/*          if(ret != 2) { */
-/*             printk("Error %s\n", buf); */
-/*          } else { */
-/*             printk("Replication for pid %d => %d\n", pid, enabled); */
-/*             change_replication_state(pid, enabled); */
-
-/*             if(enabled) { */
-/*                enable_replication = 1; */
-/*             } */
-/*          } */
-/*       } */
-/* #elif ENABLE_REPLICATION */
-/*       else if (c == 'r') { */
-/*          enable_replication = 0; */
-/*       } */
-/*       else if (c == 'R') { */
-/*          enable_replication = 1; */
-/*       } */
-/* #endif */
-
-/* #if ENABLE_MIGRATION */
-/*       else if (c == 'M') { */
-/*          enable_migration = 1; */
-/*       } */
-/*       else if (c == 'm') { */
-/*          enable_migration = 0; */
-/*       } */
-/* #endif */
-
-/* #if ADAPTIVE_SAMPLING */
-/*       else if (c == 'F') { */
-/*          // Increases the ibs frequency */
-/*          sampling_rate = sampling_rate_accurate; */
-/*       } */
-/*       else if (c == 'f') { */
-/*          // Decreases the ibs frequency */
-/*          sampling_rate = sampling_rate_cheap; */
-/*       } */
-/* #endif */
-/*    } */
-/*    return count; */
-/* } */
-
-/* static const struct file_operations ibs_cntrl_fops = { */
-/*    .write          = ibs_proc_write, */
-/* }; */
-
-/* void ibs_create_procs_files(void) { */
-/*    proc_create("inter_cntl", S_IWUGO, NULL, &ibs_cntrl_fops); */
-/* } */
-
-/* void ibs_remove_proc_files(void) { */
-/*    remove_proc_entry("inter_cntl", NULL); */
-/* } */
-
-/* /\** What to do when starting profiling **\/ */
-/* /\** Must be called with NMI disabled   **\/ */
-/* extern int consider_L1L2; */
-/* #if DUMP_OVERHEAD */
-/* static u64 time_start_profiling, time_before_stop_profiling, time_after_stop_profiling; */
-/* extern u64 time_spent_in_NMI; */
-/* extern u64 time_spent_in_migration; */
-/* #endif */
-
-/* int start_profiling(void) { */
-/* #if DUMP_OVERHEAD */
-/*    time_spent_in_migration = 0; */
-/*    rdtscll(time_start_profiling); */
-/* #endif */
-
-/*    rbtree_init(); */
-/* #if ENABLE_THREAD_PLACEMENT */
-/*    tids_init(); */
-/* #endif */
-/*    carrefour_init(); */
-
-/*    consider_L1L2 = 1; */
-/*    ibs_start(); */
-/*    return 0; */
-/* }  */
-
-/* /\** And when stoping profiling         **\/ */
-/* /\** Must be called with NMI disabled   **\/ */
-/* #if AGGRESSIVE_FIX */
-/* int disable_state = 0; */
-/* #endif */
-
-/* int permanently_disable_carrefour=0; */
-/* int stop_profiling(void) { */
-/* #if DUMP_OVERHEAD */
-/*    rdtscll(time_before_stop_profiling); */
-/* #endif */
-   
-/*    //rbtree_print(); //debug */
-/*    //show_tid_sharing_map(); //debug */
-
-/*    if(permanently_disable_carrefour || (!enable_replication && !enable_interleaving && !enable_migration)) { */
-/*       enable_carrefour = 0; */
-/*    } */
-
-/*    //printk("Current processor %d\n", smp_processor_id()); */
-/* #if ADAPTIVE_SAMPLING */
-/*    printk("-- Carrefour %s, replication %s, interleaving %s, migration %s, frequency %s\n",  */
-/*             enable_carrefour    ? "enabled" : "disabled", */
-/*             enable_replication  ? "enabled" : "disabled", */
-/*             enable_interleaving ? "enabled" : "disabled", */
-/*             enable_migration    ? "enabled" : "disabled", */
-/*             sampling_rate == sampling_rate_accurate ? "accurate" : "cheap"); */
-/* #else */
-/*    printk("-- Carrefour %s, replication %s, interleaving %s, migration %s\n",  */
-/*             enable_carrefour    ? "enabled" : "disabled", */
-/*             enable_replication  ? "enabled" : "disabled", */
-/*             enable_interleaving ? "enabled" : "disabled", */
-/*             enable_migration    ? "enabled" : "disabled"); */
-/* #endif */
-/*    ibs_stop(); */
-
-/* #if DETAILED_STATS */
-/*    if(!permanently_disable_carrefour) { */
-/*       carrefour(); */
-/*    } */
-/* #else  */
-/*    if(enable_carrefour) { */
-/*       carrefour(); */
-/*    } */
-/* #endif */
-   
-/*    /\** free all memory **\/ */
-/*    rbtree_clean(); */
-/* #if ENABLE_THREAD_PLACEMENT */
-/*    tids_clean(); */
-/* #endif */
-/*    carrefour_clean(); */
-
-/* #if DUMP_OVERHEAD */
-/*    rdtscll(time_after_stop_profiling); */
-/*    if(num_online_cpus() > 0 && (time_after_stop_profiling - time_start_profiling > 0)) { */
-/*       unsigned long total_time = time_after_stop_profiling - time_start_profiling; */
-/*       unsigned long stop_profiling_time = time_after_stop_profiling - time_before_stop_profiling; */
-
-/*       printk("-- Carrefour %lu total profiling time, %lu stop_profiling, %lu in NMI - Overhead master core %d%%, average overhead %d%%\n", */
-/*             (unsigned long) total_time, */
-/*             (unsigned long) stop_profiling_time, */
-/*             (unsigned long) time_spent_in_NMI, */
-/*             (int)(stop_profiling_time * 100 / total_time), */
-/*             (int)((time_spent_in_NMI / num_online_cpus()) * 100 / total_time) */
-/*             ); */
-
-/*       printk("-- Carrefour %lu total migration time, migration overhead (%d%%)\n", */
-/*             (unsigned long) time_spent_in_migration, */
-/*             (int) (time_spent_in_migration * 100 / (time_after_stop_profiling - time_start_profiling)) */
-/*             ); */
-
-/*    } */
-
-/*    printk("Current core is %d\n", smp_processor_id()); */
-/* #endif */
-
-/*    return 0; */
-/* } */
+#include <xen/cpumask.h>
+#include <xen/lib.h>
+#include <xen/smp.h>
+#include <xen/string.h>
 
 /* /\** */
 /*  * Init and exit */
@@ -302,6 +47,250 @@ static unsigned sampling_rate_cheap;
 #endif
 
 struct carrefour_global_stats global_stats;
+
+/* /\** */
+/*  * /proc/inter_cntl */
+/*  *\/ */
+static int running;
+static int enable_carrefour;
+
+static unsigned enable_replication;
+static unsigned enable_interleaving;
+static unsigned enable_migration;
+
+/* extern unsigned sampling_rate; */
+/* #if ADAPTIVE_SAMPLING */
+/* extern unsigned sampling_rate_cheap; */
+/* extern unsigned sampling_rate_accurate; */
+/* #endif */
+/* extern unsigned long nr_accesses_node[MAX_NUMNODES]; */
+
+int ibs_proc_write(const char *buf, size_t count) {
+   char c;
+
+   if (count) {
+      c = *buf;
+      if (c == 'b' && !running) {
+	 start_profiling();
+         running = 1;
+      }
+      else if (c == 'e' && running) {
+         enable_carrefour = 1;
+         stop_profiling();
+         running = 0;
+      }
+      else if (c == 'x' && running) {
+         enable_carrefour = 0;
+         stop_profiling();
+#if ADAPTIVE_SAMPLING
+         //printk("[ADAPTIVE] Carrefour disabled, reducing the IBS sampling rate\n");
+         sampling_rate = sampling_rate_cheap;
+#endif
+         start_profiling();
+      }
+      else if (c == 'k' && running) {
+         enable_carrefour = 0;
+         stop_profiling();
+         running = 0;
+      }
+#if ENABLE_INTERLEAVING
+      else if (c == 'i') {
+         enable_interleaving = 0;
+      }
+      else if (c == 'I') {
+         enable_interleaving = 1;
+      }
+#endif
+      else if (c == 'T') {
+         if(count > 1) {
+            /* /\* get buffer size *\/ */
+            /* char * buf_tmp = kmalloc(count, GFP_KERNEL | __GFP_ZERO); */
+            /* char * index = buf_tmp; */
+            /* char * next_idx; */
+            /* int node = 0; */
+
+            /* if (copy_from_user(buf_tmp, buf, count)) { */
+            /*    return -EFAULT; */
+            /* } */
+           
+            /* // Skip the I */
+            /* index++; */
+
+            /* for (next_idx = index; next_idx < buf_tmp + count; next_idx++) { */
+            /*    if(*next_idx == ',' || next_idx == (buf_tmp + count -1)) { */
+            /*       unsigned long value; */
+            /*       if(*next_idx == ',') { */
+            /*          *next_idx = 0; */
+            /*       } */
+
+            /*       if(kstrtol(index, 10, &value) < 0) { */
+            /*          printk("Value is %s (%lu)\n", index, value); */
+            /*          printk(KERN_WARNING "Strange bug\n"); */
+            /*          memset(&nr_accesses_node, 0, sizeof(unsigned long) * MAX_NUMNODES); */
+            /*          break; */
+            /*       } */
+            /*       nr_accesses_node[node++] = value; */
+            /*       index = next_idx+1; */
+
+            /*       //printk("Node %d --> %lu\n", node -1, nr_accesses_node[node-1]); */
+            /*    } */
+            /* } */
+            
+            /* kfree(buf_tmp); */
+         }
+      }
+#if ENABLE_REPLICATION && REPLICATION_PER_TID
+      /* else if (c == 'Z') { */
+      /*    int pid, enabled; */
+      /*    int ret = sscanf(buf, "Z\t%d\t%d\n", &pid, &enabled); */
+      /*    if(ret != 2) { */
+      /*       printk("Error %s\n", buf); */
+      /*    } else { */
+      /*       printk("Replication for pid %d => %d\n", pid, enabled); */
+      /*       change_replication_state(pid, enabled); */
+
+      /*       if(enabled) { */
+      /*          enable_replication = 1; */
+      /*       } */
+      /*    } */
+      /* } */
+#elif ENABLE_REPLICATION
+      /* else if (c == 'r') { */
+      /*    enable_replication = 0; */
+      /* } */
+      /* else if (c == 'R') { */
+      /*    enable_replication = 1; */
+      /* } */
+#endif
+
+#if ENABLE_MIGRATION
+      else if (c == 'M') {
+         enable_migration = 1;
+      }
+      else if (c == 'm') {
+         enable_migration = 0;
+      }
+#endif
+
+#if ADAPTIVE_SAMPLING
+      else if (c == 'F') {
+         // Increases the ibs frequency
+         sampling_rate = sampling_rate_accurate;
+      }
+      else if (c == 'f') {
+         // Decreases the ibs frequency
+         sampling_rate = sampling_rate_cheap;
+      }
+#endif
+   }
+   return count;
+}
+
+/* /\** What to do when starting profiling **\/ */
+/* /\** Must be called with NMI disabled   **\/ */
+static int consider_L1L2;
+#if DUMP_OVERHEAD
+static u64 time_start_profiling, time_before_stop_profiling, time_after_stop_profiling;
+static u64 time_spent_in_NMI;
+static u64 time_spent_in_migration;
+#endif
+
+int start_profiling(void) {
+#if DUMP_OVERHEAD
+   time_spent_in_migration = 0;
+   rdtscll(time_start_profiling);
+#endif
+
+   printk("rbtree_init();\n");
+/* #if ENABLE_THREAD_PLACEMENT */
+/*    tids_init(); */
+/* #endif */
+   printk("carrefour_init();\n");
+
+   consider_L1L2 = 1;
+   printk("ibs_start();\n");
+   return 0;
+}
+
+/* /\** And when stoping profiling         **\/ */
+/* /\** Must be called with NMI disabled   **\/ */
+/* #if AGGRESSIVE_FIX */
+/* int disable_state = 0; */
+/* #endif */
+
+int permanently_disable_carrefour=0;
+int stop_profiling(void) {
+#if DUMP_OVERHEAD
+	rdtscll(time_before_stop_profiling);
+#endif
+   
+   //rbtree_print(); //debug
+   //show_tid_sharing_map(); //debug
+
+   if(permanently_disable_carrefour || (!enable_replication && !enable_interleaving && !enable_migration)) {
+      enable_carrefour = 0;
+   }
+
+   //printk("Current processor %d\n", smp_processor_id());
+#if ADAPTIVE_SAMPLING
+   printk("-- Carrefour %s, replication %s, interleaving %s, migration %s, frequency %s\n",
+            enable_carrefour    ? "enabled" : "disabled",
+            enable_replication  ? "enabled" : "disabled",
+            enable_interleaving ? "enabled" : "disabled",
+            enable_migration    ? "enabled" : "disabled",
+            sampling_rate == sampling_rate_accurate ? "accurate" : "cheap");
+#else
+   printk("-- Carrefour %s, replication %s, interleaving %s, migration %s\n",
+            enable_carrefour    ? "enabled" : "disabled",
+            enable_replication  ? "enabled" : "disabled",
+            enable_interleaving ? "enabled" : "disabled",
+            enable_migration    ? "enabled" : "disabled");
+#endif
+   printk("ibs_stop();\n");
+
+#if DETAILED_STATS
+   if(!permanently_disable_carrefour) {
+      printk("carrefour();\n");
+   }
+#else
+   if(enable_carrefour) {
+      printk("carrefour();\n");
+   }
+#endif
+
+   /** free all memory **/
+   printk("rbtree_clean();\n");
+#if ENABLE_THREAD_PLACEMENT
+   printk("tids_clean();\n");
+#endif
+   printk("carrefour_clean();\n");
+
+#if DUMP_OVERHEAD
+   rdtscll(time_after_stop_profiling);
+   if(num_online_cpus() > 0 && (time_after_stop_profiling - time_start_profiling > 0)) {
+      unsigned long total_time = time_after_stop_profiling - time_start_profiling;
+      unsigned long stop_profiling_time = time_after_stop_profiling - time_before_stop_profiling;
+
+      printk("-- Carrefour %lu total profiling time, %lu stop_profiling, %lu in NMI - Overhead master core %d%%, average overhead %d%%\n",
+            (unsigned long) total_time,
+            (unsigned long) stop_profiling_time,
+            (unsigned long) time_spent_in_NMI,
+            (int)(stop_profiling_time * 100 / total_time),
+            (int)((time_spent_in_NMI / num_online_cpus()) * 100 / total_time)
+            );
+
+      printk("-- Carrefour %lu total migration time, migration overhead (%d%%)\n",
+            (unsigned long) time_spent_in_migration,
+            (int) (time_spent_in_migration * 100 / (time_after_stop_profiling - time_start_profiling))
+            );
+
+   }
+
+   printk("Current core is %d\n", smp_processor_id());
+#endif
+
+   return 0;
+}
 
 int carrefour_init_module(void) {
    /* int err; */
@@ -334,7 +323,6 @@ int carrefour_init_module(void) {
    /*    return err; */
    /* } */
 
-   /* ibs_create_procs_files(); */
    /* machine_init(); */
 
    return 0;
@@ -342,14 +330,16 @@ int carrefour_init_module(void) {
 
 void carrefour_exit_module(void) {
    /* ibs_exit(); */
-   /* ibs_remove_proc_files(); */
 
    printk("sdp: shutdown\n");
 }
 
-/* module_init(carrefour_init_module); */
-/* module_exit(carrefour_exit_module); */
-
-/* MODULE_LICENSE("GPL"); */
-/* MODULE_AUTHOR("Baptiste Lepers <baptiste.lepers@inria.fr> and Aleksey Pesterev <alekseyp@mit.edu>"); */
-/* MODULE_DESCRIPTION("Kernel IBS Interleaver Module"); */
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */

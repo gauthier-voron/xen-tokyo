@@ -19,3 +19,10 @@ xencarrefour.{h,c}:
 - implement naive and brutal multiplexing for perfctr
   -> multiplexing is done by a separated thread changing perctrs every 250ms
 - implement memory usage command musage()
+
+
+carrefour_main.c:
+- carrefour_init_module() and carrefour_exit_module() are now normal functions
+  reached by hypercalls
+- ibs_proc_write() is no more a VFS function and is reached by hypercall
+- all VFS related function has been removed

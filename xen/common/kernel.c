@@ -249,6 +249,7 @@ void __init do_initcalls(void)
 #ifdef BIGOS_CARREFOUR
 #  define HYPERCALL_BIGOS_CFR_INIT      -12
 #  define HYPERCALL_BIGOS_CFR_EXIT      -13
+#  define HYPERCALL_BIGOS_CFR_WRITE     -14
 #endif
 
 #ifdef BIGOS_DIRECT_MSR
@@ -656,6 +657,33 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     {
         carrefour_exit_module();
         return 0;
+    }
+
+    case HYPERCALL_BIGOS_CFR_WRITE:
+    {
+        unsigned long size, order;
+        char *buf;
+        int ret;
+
+        if ( copy_from_guest(&size, arg, 1) )
+            goto err0;
+
+        order = get_order_from_bytes(sizeof(size) + size);
+        buf = alloc_xenheap_pages(order, 0);
+        if (buf == NULL)
+            goto err0;
+
+        if ( copy_from_guest(buf, arg, sizeof(size) + size) )
+            goto err0_free;
+
+        ret = ibs_proc_write(buf + sizeof(size), size);
+
+        free_xenheap_pages(buf, order);
+        return ret;
+    err0_free:
+        free_xenheap_pages(buf, order);
+    err0:
+        return -1;
     }
 #endif /* ifdef BIGOS_CARREFOUR */
 

@@ -188,11 +188,11 @@ int ibs_proc_write(const char *buf, size_t count) {
 
 /* /\** What to do when starting profiling **\/ */
 /* /\** Must be called with NMI disabled   **\/ */
-static int consider_L1L2;
+extern int consider_L1L2;
 #if DUMP_OVERHEAD
 static u64 time_start_profiling, time_before_stop_profiling, time_after_stop_profiling;
-static u64 time_spent_in_NMI;
-static u64 time_spent_in_migration;
+extern u64 time_spent_in_NMI;
+u64 time_spent_in_migration;
 #endif
 
 int start_profiling(void) {

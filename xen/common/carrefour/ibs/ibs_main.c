@@ -18,6 +18,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
 #include <asm/ibs.h>
+#include <asm/msr.h>
 #include <xen/carrefour/carrefour_main.h>
 /* #include "ibs_defs.h" */
 /* #include "ibs_init.h" */
@@ -67,79 +68,38 @@ static DEFINE_PER_CPU(struct ibs_stats, stats);
 
 // This function creates a struct ibs_op_sample struct that contains all IBS info
 // This structure is passed to rbtree_add_sample which stores pages info in a rbreee.
-static void handler_ibs_nmi(struct ibs_record *record) {
+static void handle_ibs_nmi(struct ibs_record *record) {
+   int cpu = smp_processor_id();
+#if DUMP_OVERHEAD
+   uint64_t time_start,time_stop;
+   rdtscll(time_start);
+#endif
+
+   per_cpu(stats, cpu).total_interrupts++;
+
+   if((!consider_L1L2) && ((record->northbridge_infos & 7) == 0)) {
+       goto end;
+   }
+   if((record->northbridge_infos & 7) == 3)
+       per_cpu(stats, cpu).total_samples_L3DRAM++;
+
+   if(record->data_physical_address == 0)
+       goto end;
+
+   if(record->data_linear_address < min_lin_address || record->data_linear_address > max_lin_address) {
+       goto end;
+   }
+
+   per_cpu(stats, cpu).total_samples++;
+
+   /* rbtree_add_sample(!user_mode(regs), record, smp_processor_id(), current->pid, current->tgid); */
+
+end: 
+#if DUMP_OVERHEAD
+   rdtscll(time_stop);
+   per_cpu(stats, cpu).time_spent_in_NMI += time_stop - time_start;
+#endif
 }
-/* static int handle_ibs_nmi(struct pt_regs * const regs) { */
-/*    unsigned int low, high; */
-/*    struct ibs_op_sample ibs_op_stack; */
-/*    struct ibs_op_sample *ibs_op = &ibs_op_stack; */
-/*    int cpu = smp_processor_id(); */
-/* #if DUMP_OVERHEAD */
-/*    uint64_t time_start,time_stop; */
-/*    rdtscll(time_start); */
-/* #endif */
-
-/*    per_cpu(stats, cpu).total_interrupts++; */
-
-/*    rdmsr(MSR_AMD64_IBSOPCTL, low, high); */
-/*    if (low & IBS_OP_LOW_VALID_BIT) { */
-/*       rdmsr(MSR_AMD64_IBSOPDATA2, low, high); */
-/*       ibs_op->ibs_op_data2_low = low; */
-/*       ibs_op->ibs_op_data2_high = high; */
-
-/*       // If the sample does not touch DRAM, stop. */
-/*       /\*if((ibs_op->ibs_op_data2_low & 7) != 3) { */
-/* 	      goto end; */
-/*       }*\/ */
-/*       if((!consider_L1L2) && ((ibs_op->ibs_op_data2_low & 7) == 0)) { */
-/* 	      goto end; */
-/*       } */
-/*       if((ibs_op->ibs_op_data2_low & 7) == 3)  */
-/* 	      per_cpu(stats, cpu).total_samples_L3DRAM++; */
-
-/*       rdmsr(MSR_AMD64_IBSOPRIP, low, high); */
-/*       ibs_op->ibs_op_rip_low = low; */
-/*       ibs_op->ibs_op_rip_high = high; */
-/*       rdmsr(MSR_AMD64_IBSOPDATA, low, high); */
-/*       ibs_op->ibs_op_data1_low = low; */
-/*       ibs_op->ibs_op_data1_high = high; */
-/*       rdmsr(MSR_AMD64_IBSOPDATA3, low, high); */
-/*       ibs_op->ibs_op_data3_low = low; */
-/*       ibs_op->ibs_op_data3_high = high; */
-/*       rdmsr(MSR_AMD64_IBSDCLINAD, low, high); */
-/*       ibs_op->ibs_dc_linear_low = low; */
-/*       ibs_op->ibs_dc_linear_high = high; */
-/*       rdmsr(MSR_AMD64_IBSDCPHYSAD, low, high); */
-/*       ibs_op->ibs_dc_phys_low = low; */
-/*       ibs_op->ibs_dc_phys_high = high; */
-      
-/*       if(ibs_op->phys_addr == 0) */
-/* 	      goto end; */
-
-/*       if(ibs_op->lin_addr < min_lin_address || ibs_op->lin_addr > max_lin_address) { */
-/*          goto end; */
-/*       } */
-
-/*       per_cpu(stats, cpu).total_samples++; */
-
-/*       rbtree_add_sample(!user_mode(regs), ibs_op, smp_processor_id(), current->pid, current->tgid); */
-
-/* end: __attribute__((unused)); */
-/*       rdmsr(MSR_AMD64_IBSOPCTL, low, high); */
-/*       high = 0; */
-/*       low &= ~IBS_OP_LOW_VALID_BIT; */
-/*       low |= IBS_OP_LOW_ENABLE; */
-/* #if DUMP_OVERHEAD */
-/*       rdtscll(time_stop); */
-/*       per_cpu(stats, cpu).time_spent_in_NMI += time_stop - time_start; */
-/* #endif */
-/*       wrmsr(MSR_AMD64_IBSOPCTL, low, high); */
-/*    } */
-
-
-/* exit: __attribute__((unused)); */
-/*    return 1; // report success */
-/* } */
 
 /**
  * The next 4 functions are passed to nmi_int.c to start/stop IBS (low level)
@@ -196,12 +156,12 @@ int carrefour_ibs_init(void) {
       return err;
 
    /* err = ibs_nmi_setup(); */
-   err = ibs_sethandler(handler_ibs_nmi);
+   err = ibs_sethandler(handle_ibs_nmi);
    if(err) {
       printk("ibs_nmi_setup() error %d\n", err);
       return err;
    }
-   printk("pfm_amd64_setup_eilvt();\n");
+   /* pfm_amd64_setup_eilvt(); */
 
    return 0;
 }

@@ -20,6 +20,8 @@
 #ifndef __RBTREE_H__
 #define __RBTREE_H__
 
+#include <xen/types.h>
+
 struct rb_node
 {
     unsigned long  rb_parent_color;

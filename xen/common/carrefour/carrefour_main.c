@@ -32,7 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 /* extern unsigned sampling_rate; */
 static unsigned long min_lin_address;
 static unsigned long max_lin_address;
-static unsigned sampling_rate;
+unsigned sampling_rate;
 /* module_param(min_lin_address, ulong, S_IRUGO); */
 /* module_param(max_lin_address, ulong, S_IRUGO); */
 /* module_param(sampling_rate, uint, S_IRUGO); */
@@ -40,8 +40,8 @@ static unsigned sampling_rate;
 #if ADAPTIVE_SAMPLING
 /* extern unsigned sampling_rate_accurate; */
 /* extern unsigned sampling_rate_cheap; */
-static unsigned sampling_rate_accurate;
-static unsigned sampling_rate_cheap;
+unsigned sampling_rate_accurate;
+unsigned sampling_rate_cheap;
 /* module_param(sampling_rate_accurate, uint, S_IRUGO); */
 /* module_param(sampling_rate_cheap, uint, S_IRUGO); */
 #endif
@@ -201,7 +201,7 @@ int start_profiling(void) {
    rdtscll(time_start_profiling);
 #endif
 
-   printk("rbtree_init();\n");
+   rbtree_init();
 /* #if ENABLE_THREAD_PLACEMENT */
 /*    tids_init(); */
 /* #endif */
@@ -259,7 +259,7 @@ int stop_profiling(void) {
 #endif
 
    /** free all memory **/
-   printk("rbtree_clean();\n");
+   rbtree_clean();
 #if ENABLE_THREAD_PLACEMENT
    printk("tids_clean();\n");
 #endif

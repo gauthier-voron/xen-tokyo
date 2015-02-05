@@ -26,3 +26,6 @@ carrefour_main.c:
   reached by hypercalls
 - ibs_proc_write() is no more a VFS function and is reached by hypercall
 - all VFS related function has been removed
+
+carrefour_rbtree.c:
+- change stats from double to unsigned long (no SSE available)

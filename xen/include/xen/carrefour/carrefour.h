@@ -20,8 +20,10 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #ifndef ibs_CARREFOUR
 #define ibs_CARREFOUR
 
+#include <asm/page.h>
 #include <xen/carrefour/carrefour_main.h>
-#define MAX_NUMNODES 16
+#include <xen/nodemask.h>
+/* #define MAX_NUMNODES 16 */
 
 void carrefour_init(void);
 void carrefour_clean(void);

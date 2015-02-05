@@ -46,17 +46,17 @@ unsigned sampling_rate_cheap;
 /* module_param(sampling_rate_cheap, uint, S_IRUGO); */
 #endif
 
-struct carrefour_global_stats global_stats;
+extern struct carrefour_global_stats global_stats;
 
 /* /\** */
 /*  * /proc/inter_cntl */
 /*  *\/ */
 static int running;
-static int enable_carrefour;
+extern int enable_carrefour;
 
-static unsigned enable_replication;
-static unsigned enable_interleaving;
-static unsigned enable_migration;
+extern unsigned enable_replication;
+extern unsigned enable_interleaving;
+extern unsigned enable_migration;
 
 /* extern unsigned sampling_rate; */
 /* #if ADAPTIVE_SAMPLING */
@@ -205,7 +205,7 @@ int start_profiling(void) {
 /* #if ENABLE_THREAD_PLACEMENT */
 /*    tids_init(); */
 /* #endif */
-   printk("carrefour_init();\n");
+   carrefour_init();
 
    consider_L1L2 = 1;
    printk("ibs_start();\n");
@@ -250,11 +250,11 @@ int stop_profiling(void) {
 
 #if DETAILED_STATS
    if(!permanently_disable_carrefour) {
-      printk("carrefour();\n");
+      carrefour();
    }
 #else
    if(enable_carrefour) {
-      printk("carrefour();\n");
+      carrefour();
    }
 #endif
 
@@ -263,7 +263,7 @@ int stop_profiling(void) {
 #if ENABLE_THREAD_PLACEMENT
    printk("tids_clean();\n");
 #endif
-   printk("carrefour_clean();\n");
+   carrefour_clean();
 
 #if DUMP_OVERHEAD
    rdtscll(time_after_stop_profiling);

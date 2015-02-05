@@ -32,7 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 /* extern unsigned sampling_rate; */
 static unsigned long min_lin_address;
 static unsigned long max_lin_address;
-unsigned sampling_rate;
+extern unsigned sampling_rate;
 /* module_param(min_lin_address, ulong, S_IRUGO); */
 /* module_param(max_lin_address, ulong, S_IRUGO); */
 /* module_param(sampling_rate, uint, S_IRUGO); */
@@ -40,8 +40,8 @@ unsigned sampling_rate;
 #if ADAPTIVE_SAMPLING
 /* extern unsigned sampling_rate_accurate; */
 /* extern unsigned sampling_rate_cheap; */
-unsigned sampling_rate_accurate;
-unsigned sampling_rate_cheap;
+extern unsigned sampling_rate_accurate;
+extern unsigned sampling_rate_cheap;
 /* module_param(sampling_rate_accurate, uint, S_IRUGO); */
 /* module_param(sampling_rate_cheap, uint, S_IRUGO); */
 #endif
@@ -208,7 +208,7 @@ int start_profiling(void) {
    carrefour_init();
 
    consider_L1L2 = 1;
-   printk("ibs_start();\n");
+   carrefour_ibs_start();
    return 0;
 }
 
@@ -246,7 +246,7 @@ int stop_profiling(void) {
             enable_interleaving ? "enabled" : "disabled",
             enable_migration    ? "enabled" : "disabled");
 #endif
-   printk("ibs_stop();\n");
+   carrefour_ibs_stop();
 
 #if DETAILED_STATS
    if(!permanently_disable_carrefour) {
@@ -293,7 +293,7 @@ int stop_profiling(void) {
 }
 
 int carrefour_init_module(void) {
-   /* int err; */
+   int err;
 
    memset(&global_stats, 0, sizeof(struct carrefour_global_stats));
 
@@ -317,11 +317,11 @@ int carrefour_init_module(void) {
    printk("TNSIT = Total number samples in the tree\n");
    printk("TNSM  = Total number sample missed\n");
 
-   /* err = ibs_init(); */
+   err = carrefour_ibs_init();
 
-   /* if(err) { */
-   /*    return err; */
-   /* } */
+   if(err) {
+      return err;
+   }
 
    /* machine_init(); */
 
@@ -329,7 +329,7 @@ int carrefour_init_module(void) {
 }
 
 void carrefour_exit_module(void) {
-   /* ibs_exit(); */
+   carrefour_ibs_exit();
 
    printk("sdp: shutdown\n");
 }

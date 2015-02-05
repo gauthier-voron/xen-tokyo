@@ -29,3 +29,6 @@ carrefour_main.c:
 
 carrefour_rbtree.c:
 - change stats from double to unsigned long (no SSE available)
+
+ibs_main.c:
+- replace for_each_possible_cpu() by for_each_online_cpu()

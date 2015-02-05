@@ -17,6 +17,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
+#include <asm/ibs.h>
 #include <xen/carrefour/carrefour_main.h>
 /* #include "ibs_defs.h" */
 /* #include "ibs_init.h" */
@@ -66,6 +67,8 @@ static DEFINE_PER_CPU(struct ibs_stats, stats);
 
 // This function creates a struct ibs_op_sample struct that contains all IBS info
 // This structure is passed to rbtree_add_sample which stores pages info in a rbreee.
+static void handler_ibs_nmi(struct ibs_record *record) {
+}
 /* static int handle_ibs_nmi(struct pt_regs * const regs) { */
 /*    unsigned int low, high; */
 /*    struct ibs_op_sample ibs_op_stack; */
@@ -187,13 +190,13 @@ int carrefour_ibs_init(void) {
 
    printk("ibs: AMD IBS detected\n");
 
-   printk("err = ibs_nmi_init(&model);\n");
-   err = -1;
+   /* err = ibs_nmi_init(&model); */
+   err = ibs_acquire();
    if (err)
       return err;
 
-   printk("err = ibs_nmi_setup();\n");
-   err = -1;
+   /* err = ibs_nmi_setup(); */
+   err = ibs_sethandler(handler_ibs_nmi);
    if(err) {
       printk("ibs_nmi_setup() error %d\n", err);
       return err;
@@ -204,8 +207,9 @@ int carrefour_ibs_init(void) {
 }
 
 void carrefour_ibs_exit(void) {
-   printk("ibs_nmi_shutdown();\n");
-   printk("ibs_nmi_exit();\n");
+   /* ibs_nmi_shutdown(); */
+   /* ibs_nmi_exit(); */
+   ibs_release();
 }
 
 void carrefour_ibs_start() {
@@ -214,7 +218,10 @@ void carrefour_ibs_start() {
       memset(&per_cpu(stats, cpu), 0, sizeof(per_cpu(stats, cpu)));
    }
 
-   printk("ibs_nmi_start();\n");
+   /* ibs_nmi_start(); */
+   ibs_setevent(IBS_EVENT_OP);
+   ibs_setrate(sampling_rate);
+   ibs_enable();
 }
 
 #if DUMP_OVERHEAD
@@ -226,7 +233,8 @@ int carrefour_ibs_stop() {
    time_spent_in_NMI = 0;
 #endif
 
-   printk("ibs_nmi_stop();\n");
+   /* ibs_nmi_stop(); */
+   ibs_disable();
 
    for_each_online_cpu(cpu) {
 	   total_interrupts += per_cpu(stats, cpu).total_interrupts;

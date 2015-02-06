@@ -17,8 +17,10 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
+#include <asm/config.h>
 #include <xen/carrefour/carrefour_main.h>
 #include <xen/nodemask.h>
+#include <xen/random.h>
 /* #include <asm/processor.h> */
 /* #include <linux/kernel.h> */
 
@@ -274,125 +276,126 @@ static struct pages_container {
 /***
  * Actual interesting stuff 
  ***/
-/* static void decide_page_fate(struct sdpage *this) { */
-/*    int nb_dies = 0, dest_node = -1; */
-/*    int i; */
+static void decide_page_fate(struct sdpage *this) {
+   int nb_dies = 0, dest_node = -1;
+   int i;
 
-/*    int should_be_interleaved = 0; */
-/*    int should_be_migrated = 0; */
-/*    int should_be_replicated = 0; */
+   int should_be_interleaved = 0;
+   int should_be_migrated = 0;
+   int should_be_replicated = 0;
 
-/*    unsigned long total_nb_accesses = 0; */
-/*    unsigned long from_node; */
-/* #if DETAILED_STATS */
-/*    int page_status = 0; */
-/* #endif */
+   unsigned long total_nb_accesses = 0;
+   unsigned long from_node;
+#if DETAILED_STATS
+   int page_status = 0;
+#endif
 
-/*    for(i = 0; i < num_online_nodes(); i++) { */
-/*       if(this->nb_accesses[i] != 0) { */
-/*          nb_dies++; */
-/*          dest_node = i; */
-/*       } */
-/*       total_nb_accesses += this->nb_accesses[i]; */
-/*    } */
+   for(i = 0; i < num_online_nodes(); i++) {
+      if(this->nb_accesses[i] != 0) {
+         nb_dies++;
+         dest_node = i;
+      }
+      total_nb_accesses += this->nb_accesses[i];
+   }
 
-/* #if PREDICT_WITH_STDDEV */
-/*    run_stats.stddev_nr_samples_per_page +=  ( total_nb_accesses - run_stats.avg_nr_samples_per_page) * ( total_nb_accesses - run_stats.avg_nr_samples_per_page );  */
-/* #endif */
+#if PREDICT_WITH_STDDEV
+   run_stats.stddev_nr_samples_per_page +=  ( total_nb_accesses - run_stats.avg_nr_samples_per_page) * ( total_nb_accesses - run_stats.avg_nr_samples_per_page );
+#endif
 
-/* #if DETAILED_STATS */
-/*    page_status = page_has_already_been_treated(this->tgid, (unsigned long) this->page_lin); */
-/*    if(page_status == 1) { */
-/*       run_stats.nr_of_samples_after_order   += total_nb_accesses; */
-/*       run_stats.nr_of_process_pages_touched ++; */
-/*    } */
+#if DETAILED_STATS
+   page_status = page_has_already_been_treated(this->tgid, (unsigned long) this->page_lin);
+   if(page_status == 1) {
+      run_stats.nr_of_samples_after_order   += total_nb_accesses;
+      run_stats.nr_of_process_pages_touched ++;
+   }
 
-/*    if(page_status || !enable_carrefour) { */
-/*       return; */
-/*    } */
-/* #endif */
+   if(page_status || !enable_carrefour) {
+      return;
+   }
+#endif
 
 
-/*    from_node = phys2node((unsigned long) this->page_phys); */
+   from_node = phys2node((unsigned long) this->page_phys);
 
-/*    /\***** */
-/*     * THIS IS THE REAL CORE AND IMPORTANT LOGIC */
-/*     * - duplicate pages accessed from multiple nodes in RO */
-/*     * - interleave pages accessed from multiple nodes in RW */
-/*     * - move pages accessed from 1 node */
-/*     ****\/ */
-/* #if ENABLE_REPLICATION && REPLICATION_PER_TID */
-/*    if(enable_replication &&  is_allowed_to_replicate(this->tgid) && (nb_dies > 1) && ((this->nb_writes == 0) && is_user_addr(this->page_lin))) { */
-/*       should_be_replicated = 1; */
-/*    } */
-/* #elif ENABLE_REPLICATION */
-/*     if(enable_replication && (nb_dies > 1) && ((this->nb_writes == 0) && is_user_addr(this->page_lin))) { */
-/*       should_be_replicated = 1; */
-/*    } */
-/* #endif */
+   /*****
+    * THIS IS THE REAL CORE AND IMPORTANT LOGIC
+    * - duplicate pages accessed from multiple nodes in RO
+    * - interleave pages accessed from multiple nodes in RW
+    * - move pages accessed from 1 node
+    ****/
+#if ENABLE_REPLICATION && REPLICATION_PER_TID
+   if(enable_replication &&  is_allowed_to_replicate(this->tgid) && (nb_dies > 1) && ((this->nb_writes == 0) && is_user_addr(this->page_lin))) {
+      should_be_replicated = 1;
+   }
+#elif ENABLE_REPLICATION
+    /* if(enable_replication && (nb_dies > 1) && ((this->nb_writes == 0) && is_user_addr(this->page_lin))) { */
+   if(enable_replication && (nb_dies > 1) && ((this->nb_writes == 0) && (unsigned long) this->page_lin < HYPERVISOR_VIRT_START)) {
+      should_be_replicated = 1;
+   }
+#endif
 
-/* #if ENABLE_INTERLEAVING */
-/*    if(enable_interleaving && (nb_dies > 1)) { */
-/*       should_be_interleaved = 1; */
-/*    } */
-/* #endif */
+#if ENABLE_INTERLEAVING
+   if(enable_interleaving && (nb_dies > 1)) {
+      should_be_interleaved = 1;
+   }
+#endif
 
-/* #if ENABLE_MIGRATION */
-/*    if(((enable_migration && nb_dies == 1 && total_nb_accesses >= min_nr_samples_for_migration) || enable_interleaving) && from_node != dest_node) { */
-/*       should_be_migrated = 1; */
-/*    } */
-/* #endif */
+#if ENABLE_MIGRATION
+   if(((enable_migration && nb_dies == 1 && total_nb_accesses >= min_nr_samples_for_migration) || enable_interleaving) && from_node != dest_node) {
+      should_be_migrated = 1;
+   }
+#endif
 
-/*    /\** The priority is to replicate if possible **\/ */
-/*    if(should_be_replicated) { */
-/*       //printk("Choosing replication for page %p:%d (total_nb_accesses = %lu, nb_dies = %d)\n", this->page_lin, this->tgid, total_nb_accesses, nb_dies); */
-/*       insert_page_in_container(&pages_to_replicate, this->tgid, this->page_lin, 0); */
-/*       run_stats.nr_requested_replications++; */
-/*    } */
-/*    else if (should_be_interleaved) { */
-/*       int rand = random32()%101; /\** Between 0 and 100% **\/ */
+   /** The priority is to replicate if possible **/
+   if(should_be_replicated) {
+      //printk("Choosing replication for page %p:%d (total_nb_accesses = %lu, nb_dies = %d)\n", this->page_lin, this->tgid, total_nb_accesses, nb_dies);
+       printk("insert_page_in_container(&pages_to_replicate, this->tgid, this->page_lin, 0);\n");
+      run_stats.nr_requested_replications++;
+   }
+   else if (should_be_interleaved) {
+      int rand = get_random()%101; /** Between 0 and 100% **/
 
-/* #if !REPLICATION_PER_TID */
-/*       if(rand <= interleaving_proba[from_node]) { */
-/*          rand = random32()%interleaving_distrib_max; */
-/*          for(dest_node = 0; interleaving_distrib[dest_node] < rand; dest_node++) {} */
+#if !REPLICATION_PER_TID
+      if(rand <= interleaving_proba[from_node]) {
+         rand = get_random()%interleaving_distrib_max;
+         for(dest_node = 0; interleaving_distrib[dest_node] < rand; dest_node++) {}
 
-/*          if(dest_node >= num_online_nodes()) { */
-/*             printk("[WARNING] Bug ...\n"); */
-/*          } */
-/*          else if (dest_node != from_node) { */
-/*             insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node); */
-/*             run_stats.nb_interleave_orders++; */
-/*             //printk("Will interleave page on node %d\n", dest_node); */
-/*          } */
-/*       } */
-/* #else */
-/*       // This is a quick and dirty hack for now.  */
-/*       // Prevents interleaving a page on a node where there are no threads of this pid. */
-/*       // It only works because each application has two nodes on our setup. */
-/*       // To be corrected. */
-/*       if(rand <= interleaving_proba[from_node]) { */
-/*          for(dest_node = 0; dest_node < num_online_nodes(); dest_node++) { */
-/*             if(this->nb_accesses[dest_node] != 0 && dest_node != from_node) { */
-/*                break; */
-/*             } */
-/*          } */
+         if(dest_node >= num_online_nodes()) {
+            printk("[WARNING] Bug ...\n");
+         }
+         else if (dest_node != from_node) {
+             printk("insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node);\n");
+            run_stats.nb_interleave_orders++;
+            //printk("Will interleave page on node %d\n", dest_node);
+         }
+      }
+#else
+      // This is a quick and dirty hack for now.
+      // Prevents interleaving a page on a node where there are no threads of this pid.
+      // It only works because each application has two nodes on our setup.
+      // To be corrected.
+      if(rand <= interleaving_proba[from_node]) {
+         for(dest_node = 0; dest_node < num_online_nodes(); dest_node++) {
+            if(this->nb_accesses[dest_node] != 0 && dest_node != from_node) {
+               break;
+            }
+         }
 
-/*          if(dest_node >= num_online_nodes()) { */
-/*             printk("[WARNING] Bug ...\n"); */
-/*          } */
-/*          else { */
-/*             insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node); */
-/*             run_stats.nb_interleave_orders++; */
-/*          } */
-/*       } */
-/* #endif */
-/*    } */
-/*    else if (should_be_migrated) {  */
-/*       insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node); */
-/*       run_stats.nb_migration_orders++; */
-/*    } */
-/* } */
+         if(dest_node >= num_online_nodes()) {
+            printk("[WARNING] Bug ...\n");
+         }
+         else {
+            insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node);
+            run_stats.nb_interleave_orders++;
+         }
+      }
+#endif
+   }
+   else if (should_be_migrated) {
+       printk("insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node);\n");
+      run_stats.nb_migration_orders++;
+   }
+}
 
 void decide_pages_fate(void) {
    int i,j;
@@ -433,7 +436,7 @@ void decide_pages_fate(void) {
 #endif
 
    for(i = 0; i < pagesreserve.index; i++) {
-       printk("decide_page_fate(&pagesreserve.pages[i]);\n");
+       decide_page_fate(&pagesreserve.pages[i]);
    }
 
 #if PREDICT_WITH_STDDEV

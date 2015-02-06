@@ -109,7 +109,7 @@ int stop_profiling(void);
 /* #include "ibs_struct.h" */
 #include <xen/carrefour/ibs_main.h>
 #include <xen/carrefour/carrefour.h>
-/* #include "carrefour_machine.h" */
+#include <xen/carrefour/carrefour_machine.h>
 #include <xen/carrefour/carrefour_rbtree.h>
 /* #include "carrefour_migrate.h" */
 /* #include "carrefour_tids.h" */

@@ -323,7 +323,7 @@ int carrefour_init_module(void) {
       return err;
    }
 
-   /* machine_init(); */
+   machine_init();
 
    return 0;
 }

@@ -19,6 +19,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include <asm/config.h>
 #include <xen/carrefour/carrefour_main.h>
+#include <xen/mm.h>
 #include <xen/nodemask.h>
 #include <xen/random.h>
 /* #include <asm/processor.h> */
@@ -218,58 +219,104 @@ static struct pages_container {
    struct pid_pages *pids;
 } pages_to_interleave, pages_to_replicate;
 
-/* struct pid_pages *insert_pid_in_container(struct pages_container *c, pid_t tgid) { */
-/*    struct pid_pages *p = kmalloc(sizeof(*p), GFP_KERNEL); */
-/*    memset(p, 0, sizeof(*p)); */
-/*    p->tgid = tgid; */
-/*    p->next = c->pids; */
-/*    c->pids = p; */
-/*    c->nb_pid++; */
-/*    return p; */
-/* } */
 
-/* void insert_page_in_container(struct pages_container *c, pid_t tgid, void *page, int node) { */
-/*    struct pid_pages *p = NULL; */
-/*    struct pid_pages *l = c->pids; */
-/*    while(l) { */
-/*       if(l->tgid == tgid) { */
-/*          p = l; */
-/*          break; */
-/*       } */
-/*       l = l->next; */
-/*    } */
+static void *kmalloc(unsigned long size)
+{
+	unsigned long order = get_order_from_bytes(size + sizeof(unsigned long));
+    void *ret = alloc_xenheap_pages(order, 0);
 
-/*    if(!p)  */
-/*       p = insert_pid_in_container(c, tgid); */
+	if ( ret != NULL )
+    {
+        ((unsigned long *) ret)[0] = order;
+		ret += sizeof(unsigned long);
+    }
+    
+	return ret;
+}
+
+static void kfree(void *addr)
+{
+    void *taddr = addr -= sizeof(unsigned long);
+	unsigned long order = ((unsigned long *) taddr)[0];
+    
+    free_xenheap_pages(taddr, order);
+}
+
+static void *krealloc(void *old, unsigned long size)
+{
+    void *taddr;
+    void *new = kmalloc(size);
+    unsigned long order, osize = 0;
+
+    if (old != NULL)
+    {
+        taddr = old - sizeof(unsigned long);
+        order = ((unsigned long *) taddr)[0];
+        osize = (1 << (order + PAGE_SIZE)) - sizeof(unsigned long);
+    }
+    
+    if (new != NULL)
+        memcpy(new, old, osize);
+
+    if (old != NULL)
+        free_xenheap_pages(taddr, order);
+    
+    return new;
+}
+
+
+struct pid_pages *insert_pid_in_container(struct pages_container *c, /* pid_t tgid */ int tgid) {
+   struct pid_pages *p = kmalloc(sizeof(*p));
+   memset(p, 0, sizeof(*p));
+   p->tgid = tgid;
+   p->next = c->pids;
+   c->pids = p;
+   c->nb_pid++;
+   return p;
+}
+
+void insert_page_in_container(struct pages_container *c, /* pid_t tgid */ int tgid, void *page, int node) {
+   struct pid_pages *p = NULL;
+   struct pid_pages *l = c->pids;
+   while(l) {
+      if(l->tgid == tgid) {
+         p = l;
+         break;
+      }
+      l = l->next;
+   }
+
+   if(!p)
+      p = insert_pid_in_container(c, tgid);
    
-/*    if(p->nb_pages >= p->nb_max_pages) { */
-/*       if(p->nb_max_pages) { */
-/*          p->nb_max_pages *= 2; */
-/*       } else { */
-/*          p->nb_max_pages = 256; */
-/*       } */
-/*       p->pages = krealloc(p->pages, sizeof(*p->pages)*p->nb_max_pages, GFP_KERNEL); */
-/*       p->nodes = krealloc(p->nodes, sizeof(*p->nodes)*p->nb_max_pages, GFP_KERNEL); */
-/*    } */
-/*    p->pages[p->nb_pages] = page; */
-/*    p->nodes[p->nb_pages] = node; */
-/*    p->nb_pages++; */
-/* } */
+   if(p->nb_pages >= p->nb_max_pages) {
+      if(p->nb_max_pages) {
+         p->nb_max_pages *= 2;
+      } else {
+         p->nb_max_pages = 256;
+      }
+      p->pages = krealloc(p->pages, sizeof(*p->pages)*p->nb_max_pages);
+      p->nodes = krealloc(p->nodes, sizeof(*p->nodes)*p->nb_max_pages);
+   }
+   p->pages[p->nb_pages] = page;
+   p->nodes[p->nb_pages] = node;
+   p->nb_pages++;
+}
 
-/* static void carrefour_free_pages(struct pages_container *c) { */
-/*    struct pid_pages *p, *tmp; */
-/*    for(p = c->pids; p;) { */
-/*       if(p->pages) */
-/*          kfree(p->pages); */
-/*       if(p->nodes) */
-/*          kfree(p->nodes); */
-/*       tmp = p; */
-/*       p = p->next; */
-/*       kfree(tmp); */
-/*    } */
-/*    c->pids = 0; */
-/*    c->nb_pid = 0; */
-/* } */
+static void carrefour_free_pages(struct pages_container *c) {
+   struct pid_pages *p, *tmp;
+   for(p = c->pids; p;) {
+      if(p->pages)
+         kfree(p->pages);
+      if(p->nodes)
+         kfree(p->nodes);
+      tmp = p;
+      p = p->next;
+      kfree(tmp);
+   }
+   c->pids = 0;
+   c->nb_pid = 0;
+}
 
 
 
@@ -349,7 +396,7 @@ static void decide_page_fate(struct sdpage *this) {
    /** The priority is to replicate if possible **/
    if(should_be_replicated) {
       //printk("Choosing replication for page %p:%d (total_nb_accesses = %lu, nb_dies = %d)\n", this->page_lin, this->tgid, total_nb_accesses, nb_dies);
-       printk("insert_page_in_container(&pages_to_replicate, this->tgid, this->page_lin, 0);\n");
+       insert_page_in_container(&pages_to_replicate, this->tgid, this->page_lin, 0);
       run_stats.nr_requested_replications++;
    }
    else if (should_be_interleaved) {
@@ -364,7 +411,7 @@ static void decide_page_fate(struct sdpage *this) {
             printk("[WARNING] Bug ...\n");
          }
          else if (dest_node != from_node) {
-             printk("insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node);\n");
+             insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node);
             run_stats.nb_interleave_orders++;
             //printk("Will interleave page on node %d\n", dest_node);
          }
@@ -392,7 +439,7 @@ static void decide_page_fate(struct sdpage *this) {
 #endif
    }
    else if (should_be_migrated) {
-       printk("insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node);\n");
+       insert_page_in_container(&pages_to_interleave, this->tgid, this->page_lin, dest_node);
       run_stats.nb_migration_orders++;
    }
 }
@@ -519,8 +566,8 @@ void decide_pages_fate(void) {
 skip_carrefour:
 #endif
    /* Clean the mess */
-   printk("carrefour_free_pages(&pages_to_interleave);\n");
-   printk("carrefour_free_pages(&pages_to_replicate);\n");
+   carrefour_free_pages(&pages_to_interleave);
+   carrefour_free_pages(&pages_to_replicate);
 
    run_stats.total_nr_orders = run_stats.real_nb_migrations + run_stats.nb_replication_orders;
    global_stats.total_nr_orders += run_stats.total_nr_orders;

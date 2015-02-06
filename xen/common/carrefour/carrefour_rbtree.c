@@ -17,6 +17,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
+#include <asm/ibs.h>
 #include <xen/carrefour/carrefour_main.h>
 #include <xen/rbtree.h>
 #include <xen/spinlock.h>
@@ -127,104 +128,102 @@ struct sdpage * insert_in_page_rbtree(struct rb_root *root, struct sdpage *data,
 
 
 /** Called on all IBS samples. Put a page in the rbtree **/
-/* extern unsigned long nr_of_samples_after_order; */
-/* void rbtree_add_sample(int is_kernel, struct ibs_op_sample *ibs_op, int cpu, int pid, int tgid) { */
-/*    unsigned long flags; */
-/*    struct page_reserve *r = &pagesreserve; */
-/*    struct rb_root *root = &pagetree; */
-/*    struct sdpage *tmp, *tmp2; */
+extern unsigned long nr_of_samples_after_order;
+void rbtree_add_sample(int is_kernel, const struct ibs_record *record, int cpu, int pid, int tgid) {
+   unsigned long flags;
+   struct page_reserve *r = &pagesreserve;
+   struct rb_root *root = &pagetree;
+   struct sdpage *tmp, *tmp2;
 
-/*    struct rbtree_stats_t* core_stats; */
+   struct rbtree_stats_t* core_stats;
 
-/*    int is_softirq = 0;  //WE NEED TO FIND A WAY TO KNOW THAT WE ARE IN IRQ. */
-/*                         //I have a kernel hack that does that but can it be done without modifying the kernel? */
-/*    //int is_softirq = get_is_in_soft_irq(cpu); */
-/* #if ENABLE_THREAD_PLACEMENT */
-/*    int tid_index = 0; */
-/* #endif */
-/*    int node = cpu_to_node(cpu); */
+   int is_softirq = 0;  //WE NEED TO FIND A WAY TO KNOW THAT WE ARE IN IRQ.
+                        //I have a kernel hack that does that but can it be done without modifying the kernel?
+   //int is_softirq = get_is_in_soft_irq(cpu);
+#if ENABLE_THREAD_PLACEMENT
+   int tid_index = 0;
+#endif
+   int node = cpu_to_node(cpu);
 
-/*    int new = 0; */
+   int new = 0;
 
-/*    /\*** Do not consider pages acccessed by the kernel or in IRQ context ***\/ */
-/*    if(is_kernel || is_softirq) */
-/*       return; */
-/*    if(tgid == 0) */
-/*       return; */
+   /*** Do not consider pages acccessed by the kernel or in IRQ context ***/
+   if(is_kernel || is_softirq)
+      return;
+   if(tgid == 0)
+      return;
 
-/*    /\*  */
-/*       local_irq_save(flags); */
-/*       preempt_disable(); */
-/*       if(page_has_already_been_treated(pid, (ibs_op->lin_addr & SDPAGE_MASK)) == 1) { */
-/*       nr_of_samples_after_order++; */
-/*       } */
-/*       local_irq_restore(flags); */
-/*       preempt_enable(); */
-/*    *\/ */
+   /*
+      local_irq_save(flags);
+      preempt_disable();
+      if(page_has_already_been_treated(pid, (ibs_op->lin_addr & SDPAGE_MASK)) == 1) {
+      nr_of_samples_after_order++;
+      }
+      local_irq_restore(flags);
+      preempt_enable();
+   */
 
-/*    /\*** Insert in rbtree ***\/ */
-/*    spin_lock_irqsave(&pagetree_lock, flags); */
-/* #if ENABLE_THREAD_PLACEMENT */
-/*    tid_index = get_tid_index(pid); */
-/* #endif */
+   /*** Insert in rbtree ***/
+   spin_lock_irqsave(&pagetree_lock, flags);
+#if ENABLE_THREAD_PLACEMENT
+   tid_index = get_tid_index(pid);
+#endif
 
-/*    tmp = &r->pages[r->index]; */
-/*    tmp->page_lin = (void *) (ibs_op->lin_addr & SDPAGE_MASK); */
-/*    tmp->page_phys = (void *) (ibs_op->phys_addr & SDPAGE_MASK); */
-/*    tmp->tgid = tgid; */
+   tmp = &r->pages[r->index];
+   tmp->page_lin = (void *) (record->data_linear_address & SDPAGE_MASK);
+   tmp->page_phys = (void *) (record->data_physical_address & SDPAGE_MASK);
+   tmp->tgid = tgid;
 
-/*    tmp2 = insert_in_page_rbtree(root, tmp, (r->index < pagesreserve.max_pages_to_watch - 1)); */
-/*    if(tmp2 == tmp && r->index < pagesreserve.max_pages_to_watch - 1) { */
-/*       r->index++; */
-/*       new = 1; */
-/*    } */
+   tmp2 = insert_in_page_rbtree(root, tmp, (r->index < pagesreserve.max_pages_to_watch - 1));
+   if(tmp2 == tmp && r->index < pagesreserve.max_pages_to_watch - 1) {
+      r->index++;
+      new = 1;
+   }
 
-/*    spin_unlock_irqrestore(&pagetree_lock, flags); */
+   spin_unlock_irqrestore(&pagetree_lock, flags);
 
-/*    core_stats = get_cpu_ptr(&rbtree_core_stats); */
-/*    if(tmp2) { */
-/* #if ENABLE_THREAD_PLACEMENT */
-/* #warning Not really thread safe */
-/*       if(tid_index < MAX_PIDS_TO_WATCH) { */
-/* 	      SET_TID(tmp2->tids, tid_index); */
-/* 	      increment_tid_counts(tid_index, tmp2->tids); */
-/* 	      increment_tid_node_access(tid_index, phys2node(ibs_op->phys_addr)); */
-/*       } else { */
-/*          WARN_ONCE(tid_index >= MAX_PIDS_TO_WATCH, "Strange tid index: %d\n", tid_index); */
-/*       } */
-/* #endif */
+   core_stats = &this_cpu(rbtree_core_stats);
+   if(tmp2) {
+#if ENABLE_THREAD_PLACEMENT
+#warning Not really thread safe
+      if(tid_index < MAX_PIDS_TO_WATCH) {
+	      SET_TID(tmp2->tids, tid_index);
+	      increment_tid_counts(tid_index, tmp2->tids);
+	      increment_tid_node_access(tid_index, phys2node(record->data_physical_address));
+      } else {
+         WARN_ONCE(tid_index >= MAX_PIDS_TO_WATCH, "Strange tid index: %d\n", tid_index);
+      }
+#endif
 
-/*       if(node >= num_online_nodes() || node < 0) { */
-/*          printk("Strange node %d\n", node); */
-/*       } else { */
-/*          __sync_fetch_and_add(&(tmp2->nb_accesses[node]), 1); */
-/*       } */
+      if(node >= num_online_nodes() || node < 0) {
+         printk("Strange node %d\n", node);
+      } else {
+         __sync_fetch_and_add(&(tmp2->nb_accesses[node]), 1);
+      }
 
-/*       if(ibs_op->data3.IbsStOp) {  */
-/*          __sync_fetch_and_add(&(tmp2->nb_writes), 1); */
-/*       } */
+      if(record->cache_infos & IBS_RECORD_STOP) {
+         __sync_fetch_and_add(&(tmp2->nb_writes), 1);
+      }
       
-/*       core_stats->total_samples_in_tree++; */
-/*       if(new) { */
-/*          core_stats->nr_pages_in_tree++; */
-/*       } */
-/*    } */
-/*    else { */
-/*       core_stats->total_samples_missed++; */
-/*    } */
+      core_stats->total_samples_in_tree++;
+      if(new) {
+         core_stats->nr_pages_in_tree++;
+      }
+   }
+   else {
+      core_stats->total_samples_missed++;
+   }
 
-/*    if(ibs_op->data3.IbsStOp) {  */
-/*       core_stats->nr_st_samples ++; */
-/*    } */
-/*    if(ibs_op->data3.IbsLdOp) {  */
-/*       core_stats->nr_ld_samples ++; */
-/*    } */
+   if(record->cache_infos & IBS_RECORD_STOP) {
+      core_stats->nr_st_samples ++;
+   }
+   if(record->cache_infos & IBS_RECORD_LDOP) {
+      core_stats->nr_ld_samples ++;
+   }
 
-/*    put_cpu_ptr(&rbtree_core_stats); */
-
-/* err: __attribute__((unused)); */
-/*    return; */
-/* } */
+err: __attribute__((unused));
+   return;
+}
 
 
 void rbtree_clean(void) {

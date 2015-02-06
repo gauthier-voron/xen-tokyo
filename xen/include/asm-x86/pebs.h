@@ -71,7 +71,7 @@ struct pebs_record
  * Handle an NMI, checking if the reason is PEBS and then, dispatching to
  * appropriate handlers.
  */
-int nmi_pebs(int cpu);
+int nmi_pebs(const struct cpu_user_regs *regs);
 
 
 /*
@@ -117,7 +117,8 @@ int pebs_setrate(unsigned long rate);
  * The handler is called in an NMI context.
  * Return 0 in case of success.
  */
-int pebs_sethandler(void (*handler)(struct pebs_record *record, int cpu));
+int pebs_sethandler(void (*handler)(const struct pebs_record *record,
+                                    const struct cpu_user_regs *regs));
 
 
 /*

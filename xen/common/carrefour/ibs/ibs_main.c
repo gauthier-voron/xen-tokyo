@@ -20,6 +20,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <asm/ibs.h>
 #include <asm/msr.h>
 #include <xen/carrefour/carrefour_main.h>
+#include <xen/sched.h>
 /* #include "ibs_defs.h" */
 /* #include "ibs_init.h" */
 /* #include "nmi_int.h" */
@@ -68,7 +69,8 @@ static DEFINE_PER_CPU(struct ibs_stats, stats);
 
 // This function creates a struct ibs_op_sample struct that contains all IBS info
 // This structure is passed to rbtree_add_sample which stores pages info in a rbreee.
-static void handle_ibs_nmi(struct ibs_record *record) {
+static void handle_ibs_nmi(const struct ibs_record *record,
+                           const struct cpu_user_regs *regs) {
    int cpu = smp_processor_id();
 #if DUMP_OVERHEAD
    uint64_t time_start,time_stop;
@@ -92,7 +94,8 @@ static void handle_ibs_nmi(struct ibs_record *record) {
 
    per_cpu(stats, cpu).total_samples++;
 
-   /* rbtree_add_sample(!user_mode(regs), record, smp_processor_id(), current->pid, current->tgid); */
+   rbtree_add_sample(!guest_mode(regs), record, smp_processor_id(),
+                     current->domain->domain_id, current->vcpu_id);
 
 end: 
 #if DUMP_OVERHEAD

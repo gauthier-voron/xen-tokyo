@@ -17,6 +17,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
+#include <asm/ibs.h>
 #include <xen/rbtree.h>
 #include <xen/spinlock.h>
 
@@ -61,7 +62,7 @@ extern spinlock_t pagetree_lock;
 extern struct page_reserve pagesreserve;
 
 void rbtree_init(void);
-/* void rbtree_add_sample(int is_kernel, struct ibs_op_sample *ibs_op, int cpu, int pid, int tgid); */
+void rbtree_add_sample(int is_kernel, const struct ibs_record *record, int cpu, int pid, int tgid);
 void rbtree_print(void);
 void rbtree_clean(void);
 void rbtree_get_merged_stats(struct rbtree_stats_t * stats_to_fill, struct carrefour_run_stats * c_stats);

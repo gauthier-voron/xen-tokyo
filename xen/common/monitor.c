@@ -677,7 +677,8 @@ static void disable_monitoring_pebs(void)
     /* pebs_release(); */
 }
 
-static void ibs_nmi_handler(struct ibs_record *record)
+static void ibs_nmi_handler(const struct ibs_record *record,
+                            const struct cpu_user_regs *regs)
 {
     unsigned long vaddr, gfn, ogfn, mfn;
     struct migration_query *query;

@@ -2,6 +2,7 @@
 #define ASM_X86__IBS_H
 
 
+#include <asm/regs.h>
 #include <xen/types.h>
 
 
@@ -100,7 +101,7 @@ struct ibs_record
  * appropriate handler.
  * Return 1 if the NMI was an IBS-related NMI, 0 otherwise.
  */
-int nmi_ibs(void);
+int nmi_ibs(const struct cpu_user_regs *regs);
 
 
 /*
@@ -147,7 +148,8 @@ int ibs_setrate(unsigned long rate);
  * The handler is called in an NMI context.
  * Return 0 in case of success.
  */
-int ibs_sethandler(void (*handler)(struct ibs_record *record));
+int ibs_sethandler(void (*handler)(const struct ibs_record *record,
+				   const struct cpu_user_regs *regs));
 
 
 /*

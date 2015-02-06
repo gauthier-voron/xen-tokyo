@@ -375,13 +375,15 @@ static void free_msr_pebs(int cpu)
 /*
  * The PEBS user defined handler for each CPU.
  */
-static void (*pebs_handler)(struct pebs_record *record, int cpu);
+static void (*pebs_handler)(const struct pebs_record *record,
+                            const struct cpu_user_regs *regs);
 
-int nmi_pebs(int cpu)
+int nmi_pebs(const struct cpu_user_regs *regs)
 {
     u64 pebs_enable, global_status, ds_area, addr;
     struct debug_store *local_store;
-    void (*handler)(struct pebs_record *, int);
+    void (*handler)(const struct pebs_record *record,
+                    const struct cpu_user_regs *regs);
 
     /* Start by disabling PEBS while handling the interrupt */
     rdmsr_safe(MSR_IA32_PEBS_ENABLE, pebs_enable);
@@ -402,7 +404,7 @@ int nmi_pebs(int cpu)
         for (addr = local_store->pebs_buffer_base;
              addr < local_store->pebs_index;
              addr += pebs_record_size)
-            handler((struct pebs_record *) addr, cpu);
+            handler((struct pebs_record *) addr, regs);
 
     /* Once the data has been processed, reset the index to the start */
     local_store->pebs_index = local_store->pebs_buffer_base;
@@ -540,7 +542,8 @@ int pebs_setrate(unsigned long rate)
     return 0;
 }
 
-int pebs_sethandler(void (*handler)(struct pebs_record *record, int cpu))
+int pebs_sethandler(void (*handler)(const struct pebs_record *record,
+                                    const struct cpu_user_regs *regs))
 {
     pebs_handler = handler;
     return 0;

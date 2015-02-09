@@ -18,8 +18,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
 #include <asm/config.h>
+#include <xen/carrefour/carrefour_alloc.h>
 #include <xen/carrefour/carrefour_main.h>
-#include <xen/mm.h>
 #include <xen/nodemask.h>
 #include <xen/random.h>
 /* #include <asm/processor.h> */
@@ -218,51 +218,6 @@ static struct pages_container {
    int nb_pid;
    struct pid_pages *pids;
 } pages_to_interleave, pages_to_replicate;
-
-
-static void *kmalloc(unsigned long size)
-{
-	unsigned long order = get_order_from_bytes(size + sizeof(unsigned long));
-    void *ret = alloc_xenheap_pages(order, 0);
-
-	if ( ret != NULL )
-    {
-        ((unsigned long *) ret)[0] = order;
-		ret += sizeof(unsigned long);
-    }
-    
-	return ret;
-}
-
-static void kfree(void *addr)
-{
-    void *taddr = addr -= sizeof(unsigned long);
-	unsigned long order = ((unsigned long *) taddr)[0];
-    
-    free_xenheap_pages(taddr, order);
-}
-
-static void *krealloc(void *old, unsigned long size)
-{
-    void *taddr;
-    void *new = kmalloc(size);
-    unsigned long order, osize = 0;
-
-    if (old != NULL)
-    {
-        taddr = old - sizeof(unsigned long);
-        order = ((unsigned long *) taddr)[0];
-        osize = (1 << (order + PAGE_SIZE)) - sizeof(unsigned long);
-    }
-    
-    if (new != NULL)
-        memcpy(new, old, osize);
-
-    if (old != NULL)
-        free_xenheap_pages(taddr, order);
-    
-    return new;
-}
 
 
 struct pid_pages *insert_pid_in_container(struct pages_container *c, /* pid_t tgid */ int tgid) {
@@ -497,8 +452,7 @@ void decide_pages_fate(void) {
 
    /* Migrate or interleave */
    for(p = pages_to_interleave.pids; p; p = p->next) {
-      /* int err = s_migrate_pages(p->tgid, p->nb_pages, p->pages, p->nodes, NULL, MPOL_MF_MOVE_ALL); */
-      int err = -3464574;
+      int err = s_migrate_pages(p->tgid, p->nb_pages, p->pages, p->nodes, NULL, /* MPOL_MF_MOVE_ALL */ 0);
       //printk("Moving %d pages of pid %d!\n", p->nb_pages, p->tgid);
 
       if(err) {

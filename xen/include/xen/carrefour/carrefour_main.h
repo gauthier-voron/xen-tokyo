@@ -111,7 +111,7 @@ int stop_profiling(void);
 #include <xen/carrefour/carrefour.h>
 #include <xen/carrefour/carrefour_machine.h>
 #include <xen/carrefour/carrefour_rbtree.h>
-/* #include "carrefour_migrate.h" */
+#include <xen/carrefour/carrefour_migrate.h>
 /* #include "carrefour_tids.h" */
 /* #include "carrefour_hooks.h" */
 /* #include "carrefour_tid_replication.h" */

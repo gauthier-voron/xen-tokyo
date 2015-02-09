@@ -205,6 +205,7 @@ static int cpu_of_node(int node) {
 }
 
 static inline void change_carrefour_state_str(char * str) {
+   xen_carrefour_send(str, strlen(str));
    /* if(str) { */
    /*    FILE *ibs_ctl = fopen("/proc/inter_cntl", "w"); */
    /*    if(ibs_ctl) { */
@@ -217,10 +218,10 @@ static inline void change_carrefour_state_str(char * str) {
    /*       fprintf(stderr, "Cannot open the carrefour file. Is carrefour loaded?\n"); */
    /*    } */
    /* } */
-   /* printf("change_carrefour_state_str(%s)\n", str); */
 }
 
 static inline void change_carrefour_state(char c) {
+   xen_carrefour_send(&c, 1);
    /* FILE *ibs_ctl = fopen("/proc/inter_cntl", "w"); */
    /* if(ibs_ctl) { */
    /*    fputc(c, ibs_ctl); */
@@ -229,7 +230,6 @@ static inline void change_carrefour_state(char c) {
    /* else { */
    /*    fprintf(stderr, "Cannot open the carrefour file. Is carrefour loaded?\n"); */
    /* } */
-   /* printf("change_carrefour_state(%c)\n", c); */
 }
 
 static long percent_running(struct perf_read_ev *last, struct perf_read_ev *prev) {

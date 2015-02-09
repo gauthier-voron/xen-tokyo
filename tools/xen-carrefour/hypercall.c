@@ -4,6 +4,7 @@
 
 #define HYPERCALL_BIGOS_RDMSR         -2
 #define HYPERCALL_BIGOS_WRMSR         -3
+#define HYPERCALL_BIGOS_CFR_WRITE     -14
 
 static int hypercall(unsigned long command, unsigned long *args, int *ret)
 {
@@ -14,7 +15,7 @@ static int hypercall(unsigned long command, unsigned long *args, int *ret)
 	
 	if (xch == NULL)
 		    return -1;
-	if (ret)
+	if (!ret)
 		    ret = &_ret;
 	
 	hypercall.op = __HYPERVISOR_xen_version;
@@ -71,4 +72,23 @@ double musage(void)
 
 	return 100 - 100.0 * ((double) sysctl.u.physinfo.free_pages)
 		/ ((double) sysctl.u.physinfo.total_pages);
+}
+
+void xen_carrefour_send(const char *str, unsigned long count)
+{
+	unsigned long *cmd;
+	int ret;
+
+	cmd = alloca(sizeof(count) + count + 1);
+	cmd[0] = count;
+	memcpy(&cmd[1], str, count);
+	((char *) cmd)[sizeof(count) + count] = '\0';
+
+	if (hypercall(HYPERCALL_BIGOS_CFR_WRITE, cmd, &ret) != 0)
+		fprintf(stderr, "ERROR: cannot hypercall for WRITE(%s, %lu)\n",
+			((char *) &cmd[1]), count);
+	if (ret != count)
+		fprintf(stderr, "ERROR: hypercall failed for WRITE(%s, %lu) "
+			"-> %d\n",
+			((char *) &cmd[1]), count, ret);
 }

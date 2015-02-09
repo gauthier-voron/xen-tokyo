@@ -18,6 +18,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
 #include <asm/msr.h>
+#include <xen/carrefour/carrefour_alloc.h>
 #include <xen/carrefour/carrefour_main.h>
 #include <xen/cpumask.h>
 #include <xen/lib.h>
@@ -63,7 +64,7 @@ extern unsigned enable_migration;
 /* extern unsigned sampling_rate_cheap; */
 /* extern unsigned sampling_rate_accurate; */
 /* #endif */
-/* extern unsigned long nr_accesses_node[MAX_NUMNODES]; */
+extern unsigned long nr_accesses_node[MAX_NUMNODES];
 
 int ibs_proc_write(const char *buf, size_t count) {
    char c;
@@ -71,7 +72,7 @@ int ibs_proc_write(const char *buf, size_t count) {
    if (count) {
       c = *buf;
       if (c == 'b' && !running) {
-	 start_profiling();
+         start_profiling();
          running = 1;
       }
       else if (c == 'e' && running) {
@@ -103,40 +104,39 @@ int ibs_proc_write(const char *buf, size_t count) {
 #endif
       else if (c == 'T') {
          if(count > 1) {
-            /* /\* get buffer size *\/ */
-            /* char * buf_tmp = kmalloc(count, GFP_KERNEL | __GFP_ZERO); */
-            /* char * index = buf_tmp; */
-            /* char * next_idx; */
-            /* int node = 0; */
+            /* get buffer size */
+            char * buf_tmp = kmalloc(count);
+            char * index = buf_tmp;
+            char * next_idx;
+            int node = 0;
 
-            /* if (copy_from_user(buf_tmp, buf, count)) { */
-            /*    return -EFAULT; */
-            /* } */
+            memset(buf_tmp, 0, count);
+            memcpy(buf_tmp, buf, count);
            
-            /* // Skip the I */
-            /* index++; */
+            // Skip the I
+            index++;
 
-            /* for (next_idx = index; next_idx < buf_tmp + count; next_idx++) { */
-            /*    if(*next_idx == ',' || next_idx == (buf_tmp + count -1)) { */
-            /*       unsigned long value; */
-            /*       if(*next_idx == ',') { */
-            /*          *next_idx = 0; */
-            /*       } */
+            for (next_idx = index; next_idx < buf_tmp + count; next_idx++) {
+               if(*next_idx == ',' || next_idx == (buf_tmp + count -1)) {
+                  unsigned long value;
+                  if(*next_idx == ',') {
+                     *next_idx = 0;
+                  }
 
-            /*       if(kstrtol(index, 10, &value) < 0) { */
-            /*          printk("Value is %s (%lu)\n", index, value); */
-            /*          printk(KERN_WARNING "Strange bug\n"); */
-            /*          memset(&nr_accesses_node, 0, sizeof(unsigned long) * MAX_NUMNODES); */
-            /*          break; */
-            /*       } */
-            /*       nr_accesses_node[node++] = value; */
-            /*       index = next_idx+1; */
+                  if((value = simple_strtol(index, NULL, 10)) < 0) {
+                     printk("Value is %s (%lu)\n", index, value);
+                     printk("Strange bug\n");
+                     memset(&nr_accesses_node, 0, sizeof(unsigned long) * MAX_NUMNODES);
+                     break;
+                  }
+                  nr_accesses_node[node++] = value;
+                  index = next_idx+1;
 
-            /*       //printk("Node %d --> %lu\n", node -1, nr_accesses_node[node-1]); */
-            /*    } */
-            /* } */
+                  //printk("Node %d --> %lu\n", node -1, nr_accesses_node[node-1]);
+               }
+            }
             
-            /* kfree(buf_tmp); */
+            kfree(buf_tmp);
          }
       }
 #if ENABLE_REPLICATION && REPLICATION_PER_TID

@@ -95,7 +95,7 @@ static void handle_ibs_nmi(const struct ibs_record *record,
    per_cpu(stats, cpu).total_samples++;
 
    rbtree_add_sample(!guest_mode(regs), record, smp_processor_id(),
-                     current->domain->domain_id, current->vcpu_id);
+                     current->vcpu_id, current->domain->domain_id);
 
 end: 
 #if DUMP_OVERHEAD

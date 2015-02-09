@@ -166,7 +166,7 @@ void rbtree_add_sample(int is_kernel, const struct ibs_record *record, int cpu, 
    /*** Insert in rbtree ***/
    spin_lock_irqsave(&pagetree_lock, flags);
 #if ENABLE_THREAD_PLACEMENT
-   tid_index = get_tid_index(pid);
+   /* tid_index = get_tid_index(pid); */
 #endif
 
    tmp = &r->pages[r->index];

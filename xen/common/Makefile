@@ -56,8 +56,10 @@ obj-y += hotlist.o
 obj-y += migration.o
 obj-y += mcooldown.o
 obj-y += carrefour/carrefour.o
+obj-y += carrefour/carrefour_alloc.o
 obj-y += carrefour/carrefour_main.o
 obj-y += carrefour/carrefour_machine.o
+obj-y += carrefour/carrefour_migrate.o
 obj-y += carrefour/carrefour_rbtree.o
 obj-y += carrefour/ibs/ibs_main.o
 

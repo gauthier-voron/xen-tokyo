@@ -34,5 +34,5 @@ ibs_main.c:
 - replace for_each_possible_cpu() by for_each_online_cpu()
 - in the handling of ibs samples:
   - change kernel_mode by hypervisor_mode
-  - change pid by domain_id
-  - change tid by vcpu_id
+  - change tgid by domain_id
+  - change pid by vcpu_id

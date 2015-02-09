@@ -38,6 +38,8 @@ unsigned long rdmsr(unsigned long addr, int cpu);
 
 double musage(void);
 
+void xen_carrefour_send(const char *str, unsigned long count);
+
 
 /* === Perf counters backend =============================================== */
 

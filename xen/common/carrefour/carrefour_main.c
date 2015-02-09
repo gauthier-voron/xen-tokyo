@@ -18,40 +18,16 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
 #include <asm/msr.h>
-#include <xen/carrefour/carrefour_alloc.h>
 #include <xen/carrefour/carrefour_main.h>
 #include <xen/cpumask.h>
 #include <xen/lib.h>
+#include <xen/nodemask.h>
 #include <xen/smp.h>
 #include <xen/string.h>
 
-/* /\** */
-/*  * Init and exit */
-/*  *\/ */
-/* extern unsigned long min_lin_address; */
-/* extern unsigned long max_lin_address; */
-/* extern unsigned sampling_rate; */
-static unsigned long min_lin_address;
-static unsigned long max_lin_address;
-extern unsigned sampling_rate;
-/* module_param(min_lin_address, ulong, S_IRUGO); */
-/* module_param(max_lin_address, ulong, S_IRUGO); */
-/* module_param(sampling_rate, uint, S_IRUGO); */
-
-#if ADAPTIVE_SAMPLING
-/* extern unsigned sampling_rate_accurate; */
-/* extern unsigned sampling_rate_cheap; */
-extern unsigned sampling_rate_accurate;
-extern unsigned sampling_rate_cheap;
-/* module_param(sampling_rate_accurate, uint, S_IRUGO); */
-/* module_param(sampling_rate_cheap, uint, S_IRUGO); */
-#endif
-
-extern struct carrefour_global_stats global_stats;
-
-/* /\** */
-/*  * /proc/inter_cntl */
-/*  *\/ */
+/**
+ * /proc/inter_cntl
+ */
 static int running;
 extern int enable_carrefour;
 
@@ -59,87 +35,83 @@ extern unsigned enable_replication;
 extern unsigned enable_interleaving;
 extern unsigned enable_migration;
 
-/* extern unsigned sampling_rate; */
-/* #if ADAPTIVE_SAMPLING */
-/* extern unsigned sampling_rate_cheap; */
-/* extern unsigned sampling_rate_accurate; */
-/* #endif */
+extern unsigned long sampling_rate;
 extern unsigned long nr_accesses_node[MAX_NUMNODES];
 
-int ibs_proc_write(const char *buf, size_t count) {
+int ibs_proc_write(const char *buf, unsigned long count) {
    char c;
 
    if (count) {
       c = *buf;
       if (c == 'b' && !running) {
-         start_profiling();
+         printk("start_profiling();\n");
          running = 1;
-      }
+      } 
       else if (c == 'e' && running) {
          enable_carrefour = 1;
-         stop_profiling();
+         printk("stop_profiling();\n");
          running = 0;
-      }
+      } 
       else if (c == 'x' && running) {
          enable_carrefour = 0;
-         stop_profiling();
-#if ADAPTIVE_SAMPLING
-         //printk("[ADAPTIVE] Carrefour disabled, reducing the IBS sampling rate\n");
-         sampling_rate = sampling_rate_cheap;
-#endif
-         start_profiling();
+         printk("stop_profiling();\n");
+        
+         /* if(carrefour_module_options[ADAPTIVE_SAMPLING].value) {  */
+         /*    //printk("[ADAPTIVE] Carrefour disabled, reducing the IBS sampling rate\n"); */
+         /*    sampling_rate = (unsigned long) carrefour_module_options[IBS_RATE_CHEAP].value; */
+         /* } */
+
+         printk("start_profiling();\n");
       }
       else if (c == 'k' && running) {
          enable_carrefour = 0;
-         stop_profiling();
+         printk("stop_profiling();\n");
          running = 0;
       }
-#if ENABLE_INTERLEAVING
       else if (c == 'i') {
          enable_interleaving = 0;
       }
       else if (c == 'I') {
          enable_interleaving = 1;
       }
-#endif
-      else if (c == 'T') {
-         if(count > 1) {
-            /* get buffer size */
-            char * buf_tmp = kmalloc(count);
-            char * index = buf_tmp;
-            char * next_idx;
-            int node = 0;
+      /* else if (c == 'T') { */
+      /*    if(count > 1) { */
+      /*       /\* get buffer size *\/ */
+      /*       char * buf_tmp = kmalloc(count, GFP_KERNEL | __GFP_ZERO); */
+      /*       char * index = buf_tmp; */
+      /*       char * next_idx; */
+      /*       int node = 0; */
 
-            memset(buf_tmp, 0, count);
-            memcpy(buf_tmp, buf, count);
+      /*       if (copy_from_user(buf_tmp, buf, count)) { */
+      /*          return -EFAULT; */
+      /*       } */
            
-            // Skip the I
-            index++;
+      /*       // Skip the I */
+      /*       index++; */
 
-            for (next_idx = index; next_idx < buf_tmp + count; next_idx++) {
-               if(*next_idx == ',' || next_idx == (buf_tmp + count -1)) {
-                  unsigned long value;
-                  if(*next_idx == ',') {
-                     *next_idx = 0;
-                  }
+      /*       for (next_idx = index; next_idx < buf_tmp + count; next_idx++) { */
+      /*          if(*next_idx == ',' || next_idx == (buf_tmp + count -1)) { */
+      /*             unsigned long value; */
+      /*             if(*next_idx == ',') { */
+      /*                *next_idx = 0; */
+      /*             } */
 
-                  if((value = simple_strtol(index, NULL, 10)) < 0) {
-                     printk("Value is %s (%lu)\n", index, value);
-                     printk("Strange bug\n");
-                     memset(&nr_accesses_node, 0, sizeof(unsigned long) * MAX_NUMNODES);
-                     break;
-                  }
-                  nr_accesses_node[node++] = value;
-                  index = next_idx+1;
+      /*             if(kstrtol(index, 10, &value) < 0) { */
+      /*                printk("Value is %s (%lu)\n", index, value);  */
+      /*                printk(KERN_WARNING "Strange bug\n"); */
+      /*                memset(&nr_accesses_node, 0, sizeof(unsigned long) * MAX_NUMNODES); */
+      /*                break; */
+      /*             } */
+      /*             nr_accesses_node[node++] = value; */
+      /*             index = next_idx+1; */
 
-                  //printk("Node %d --> %lu\n", node -1, nr_accesses_node[node-1]);
-               }
-            }
+      /*             //printk("Node %d --> %lu\n", node -1, nr_accesses_node[node-1]); */
+      /*          } */
+      /*       } */
             
-            kfree(buf_tmp);
-         }
-      }
-#if ENABLE_REPLICATION && REPLICATION_PER_TID
+      /*       kfree(buf_tmp);  */
+      /*    } */
+      /* } */
       /* else if (c == 'Z') { */
       /*    int pid, enabled; */
       /*    int ret = sscanf(buf, "Z\t%d\t%d\n", &pid, &enabled); */
@@ -147,125 +119,108 @@ int ibs_proc_write(const char *buf, size_t count) {
       /*       printk("Error %s\n", buf); */
       /*    } else { */
       /*       printk("Replication for pid %d => %d\n", pid, enabled); */
-      /*       change_replication_state(pid, enabled); */
+      /*       printk("change_replication_state(pid, enabled);\n"); */
 
       /*       if(enabled) { */
       /*          enable_replication = 1; */
       /*       } */
       /*    } */
       /* } */
-#elif ENABLE_REPLICATION
-      /* else if (c == 'r') { */
-      /*    enable_replication = 0; */
-      /* } */
-      /* else if (c == 'R') { */
-      /*    enable_replication = 1; */
-      /* } */
-#endif
-
-#if ENABLE_MIGRATION
+      else if (c == 'r') {
+         enable_replication = 0;
+      }
+      else if (c == 'R') {
+         enable_replication = 1;
+      }
       else if (c == 'M') {
          enable_migration = 1;
       }
       else if (c == 'm') {
          enable_migration = 0;
       }
-#endif
 
-#if ADAPTIVE_SAMPLING
-      else if (c == 'F') {
-         // Increases the ibs frequency
-         sampling_rate = sampling_rate_accurate;
-      }
-      else if (c == 'f') {
-         // Decreases the ibs frequency
-         sampling_rate = sampling_rate_cheap;
-      }
-#endif
+      /* else if (c == 'F' && carrefour_module_options[ADAPTIVE_SAMPLING].value) { */
+      /*    // Increases the ibs frequency */
+      /*    sampling_rate = carrefour_module_options[IBS_RATE_ACCURATE].value; */
+      /* } */
+      /* else if (c == 'f' && carrefour_module_options[ADAPTIVE_SAMPLING].value) { */
+      /*    // Decreases the ibs frequency */
+      /*    sampling_rate = carrefour_module_options[IBS_RATE_CHEAP].value; */
+      /* } */
+      /* else if (c == 'a') { */
+      /*    struct carrefour_options_t opt; */
+      /*    opt = get_carrefour_hooks_conf(); */
+      /*    opt.async_4k_migrations  = 0; */
+      /*    configure_carrefour_hooks(opt); */
+      /* } */
    }
    return count;
 }
 
-/* /\** What to do when starting profiling **\/ */
-/* /\** Must be called with NMI disabled   **\/ */
-extern int consider_L1L2;
-#if DUMP_OVERHEAD
-static u64 time_start_profiling, time_before_stop_profiling, time_after_stop_profiling;
-extern u64 time_spent_in_NMI;
-u64 time_spent_in_migration;
-#endif
+/** What to do when starting profiling **/
+/** Must be called with NMI disabled   **/
+unsigned long time_start_profiling;
 
 int start_profiling(void) {
-#if DUMP_OVERHEAD
-   time_spent_in_migration = 0;
    rdtscll(time_start_profiling);
-#endif
 
-   rbtree_init();
-/* #if ENABLE_THREAD_PLACEMENT */
-/*    tids_init(); */
-/* #endif */
-   carrefour_init();
+   printk("rbtree_init();\n");
+   printk("carrefour_init();\n");
 
-   consider_L1L2 = 1;
-   carrefour_ibs_start();
+   printk("ibs_start();\n");
+
+   printk("reset_carrefour_stats();\n");
+
    return 0;
-}
+} 
 
-/* /\** And when stoping profiling         **\/ */
-/* /\** Must be called with NMI disabled   **\/ */
-/* #if AGGRESSIVE_FIX */
-/* int disable_state = 0; */
-/* #endif */
-
-int permanently_disable_carrefour=0;
+/** And when stoping profiling         **/
+/** Must be called with NMI disabled   **/
 int stop_profiling(void) {
-#if DUMP_OVERHEAD
-	rdtscll(time_before_stop_profiling);
-#endif
+   u64 time_before_stop_profiling, time_after_stop_profiling;
+   rdtscll(time_before_stop_profiling);
    
    //rbtree_print(); //debug
    //show_tid_sharing_map(); //debug
 
-   if(permanently_disable_carrefour || (!enable_replication && !enable_interleaving && !enable_migration)) {
+   enable_migration = carrefour_module_options[ENABLE_MIGRATION].value && enable_migration;
+   enable_replication = carrefour_module_options[ENABLE_REPLICATION].value && enable_replication;
+   enable_interleaving = carrefour_module_options[ENABLE_INTERLEAVING].value && enable_interleaving;
+
+   if(!enable_replication && !enable_interleaving && !enable_migration) {
       enable_carrefour = 0;
    }
 
-   //printk("Current processor %d\n", smp_processor_id());
-#if ADAPTIVE_SAMPLING
-   printk("-- Carrefour %s, replication %s, interleaving %s, migration %s, frequency %s\n",
+   printk("-- Carrefour %s, replication %s, interleaving %s, migration %s, frequency %s\n", 
             enable_carrefour    ? "enabled" : "disabled",
             enable_replication  ? "enabled" : "disabled",
             enable_interleaving ? "enabled" : "disabled",
             enable_migration    ? "enabled" : "disabled",
-            sampling_rate == sampling_rate_accurate ? "accurate" : "cheap");
-#else
-   printk("-- Carrefour %s, replication %s, interleaving %s, migration %s\n",
-            enable_carrefour    ? "enabled" : "disabled",
-            enable_replication  ? "enabled" : "disabled",
-            enable_interleaving ? "enabled" : "disabled",
-            enable_migration    ? "enabled" : "disabled");
-#endif
-   carrefour_ibs_stop();
+            sampling_rate == carrefour_module_options[IBS_RATE_ACCURATE].value ? "accurate" : "cheap");
 
-#if DETAILED_STATS
-   if(!permanently_disable_carrefour) {
-      carrefour();
+   printk("ibs_stop();\n");
+
+   printk(
+   "if(enable_carrefour) {\n"
+   "   carrefour();\n"
+   "}\n"
+       );
+   
+   if(carrefour_module_options[ADAPTIVE_SAMPLING].value) {
+      if(run_stats.total_nr_orders < carrefour_module_options[IBS_ADAPTIVE_MAGIC].value) {
+         //printk("[ADAPTIVE] Did not take enough decision (%lu). Reducing the IBS sampling rate\n", run_stats.total_nr_orders);
+         sampling_rate = carrefour_module_options[IBS_RATE_CHEAP].value;
+      }
+      else {
+         //printk("[ADAPTIVE] Took lots of decisions (%lu). Increasing the IBS sampling rate\n", run_stats.total_nr_orders);
+         sampling_rate = carrefour_module_options[IBS_RATE_ACCURATE].value;
+      }
    }
-#else
-   if(enable_carrefour) {
-      carrefour();
-   }
-#endif
 
    /** free all memory **/
-   rbtree_clean();
-#if ENABLE_THREAD_PLACEMENT
-   printk("tids_clean();\n");
-#endif
-   carrefour_clean();
+   printk("rbtree_clean();\n");
+   printk("carrefour_clean();\n");
 
-#if DUMP_OVERHEAD
    rdtscll(time_after_stop_profiling);
    if(num_online_cpus() > 0 && (time_after_stop_profiling - time_start_profiling > 0)) {
       unsigned long total_time = time_after_stop_profiling - time_start_profiling;
@@ -274,62 +229,87 @@ int stop_profiling(void) {
       printk("-- Carrefour %lu total profiling time, %lu stop_profiling, %lu in NMI - Overhead master core %d%%, average overhead %d%%\n",
             (unsigned long) total_time,
             (unsigned long) stop_profiling_time,
-            (unsigned long) time_spent_in_NMI,
+            (unsigned long) run_stats.time_spent_in_NMI,
             (int)(stop_profiling_time * 100 / total_time),
-            (int)((time_spent_in_NMI / num_online_cpus()) * 100 / total_time)
+            (int)((run_stats.time_spent_in_NMI / num_online_cpus()) * 100 / total_time)
             );
 
       printk("-- Carrefour %lu total migration time, migration overhead (%d%%)\n",
-            (unsigned long) time_spent_in_migration,
-            (int) (time_spent_in_migration * 100 / (time_after_stop_profiling - time_start_profiling))
+            (unsigned long) run_stats.time_spent_in_migration,
+            (int) (run_stats.time_spent_in_migration * 100 / (time_after_stop_profiling - time_start_profiling))
             );
 
    }
 
    printk("Current core is %d\n", smp_processor_id());
-#endif
 
    return 0;
 }
 
+/**
+ * Init and exit
+ */
+extern unsigned long min_lin_address;
+extern unsigned long max_lin_address;
+
+extern struct carrefour_global_stats global_stats;
+
 int carrefour_init_module(void) {
    int err;
+   struct carrefour_options_t options;
 
    memset(&global_stats, 0, sizeof(struct carrefour_global_stats));
 
    printk("max_lin_address = %lx\n", max_lin_address);
    printk("min_lin_address = %lx\n", min_lin_address);
 
-#if ADAPTIVE_SAMPLING
-   sampling_rate = sampling_rate_accurate;
-#endif
+   printk("NPPT  = Nr processed page touched\n"); 
+   printk("NSAAO = Nr samples after an order\n"); 
+   printk("TNO   = Total nr of orders\n"); 
+   printk("TNSIT = Total number samples in the tree\n"); 
+   printk("TNSM  = Total number sample missed\n"); 
 
-   printk("sampling_rate   = %x\n", sampling_rate);
 
-#if ADAPTIVE_SAMPLING
-   printk("sampling_rate_cheap    = %x\n", sampling_rate_cheap);
-   printk("sampling_rate_accurate = %x\n", sampling_rate_accurate);
-#endif
+   // Module options
+   printk(
+   "if(! validate_module_options()) {\n"
+   "   printk(\"Invalid options\n\");\n"
+   "   return -1;\n"
+   "}\n");
 
-   printk("NPPT  = Nr processed page touched\n");
-   printk("NSAAO = Nr samples after an order\n");
-   printk("TNO   = Total nr of orders\n");
-   printk("TNSIT = Total number samples in the tree\n");
-   printk("TNSM  = Total number sample missed\n");
+   printk("print_module_options();\n");
+   //
 
-   err = carrefour_ibs_init();
+   printk("err = ibs_init();\n");
+   err = 0;
 
    if(err) {
       return err;
    }
 
-   machine_init();
+   printk("ibs_create_procs_files();\n");
+   printk("machine_init();\n");
 
+   printk("rbtree_load_module();\n");
+
+   printk("reset_carrefour_hooks();\n");
+
+   memset(&options, 0, sizeof(struct carrefour_options_t));
+   options.page_bouncing_fix_4k = carrefour_module_options[PAGE_BOUNCING_FIX_4K].value;
+   options.page_bouncing_fix_2M = carrefour_module_options[PAGE_BOUNCING_FIX_2M].value;
+   options.async_4k_migrations  = 1;
+   /* configure_carrefour_hooks(options); */
+
+   printk("Carrefour hooks options\n\tpage_bouncing_fix_4k = %d\n\tasync_4k_migrations = %d\n\tuse_balance_numa_api = %d\n", options.page_bouncing_fix_4k, options.page_bouncing_fix_2M, options.async_4k_migrations);
+ 
    return 0;
 }
 
 void carrefour_exit_module(void) {
-   carrefour_ibs_exit();
+	printk("ibs_exit();\n");
+    printk("ibs_remove_proc_files();\n");
+
+    printk("rbtree_remove_module();\n");
 
    printk("sdp: shutdown\n");
 }

@@ -57,6 +57,7 @@ static void setup_perfctr(const struct perf_event_attr *hw_event,
 		group->evntsel[idx] |= (1 << 16);
 	if (!hw_event->exclude_kernel)
 		group->evntsel[idx] |= (1 << 17);
+	group->evntsel[idx] |= (1 << 22);
 }
 
 static int alloc_perfctr(const struct perf_event_attr *hw_event, int cpu,
@@ -81,7 +82,7 @@ static int alloc_perfctr(const struct perf_event_attr *hw_event, int cpu,
 
 
 
-#define GROUP_PER_SCHED     4
+#define GROUP_PER_SCHED     16
 #define PERFCTR_PER_SCHED   4
 #define EVNTSEL0            0xc0010000
 #define PERFCTR0            0xc0010004
@@ -305,7 +306,7 @@ int xen_read_hwc(int hwc, struct perf_read_ev *hw_read)
 			break;
 	if (i == group->fd_count)
 		goto out;
-	
+
 	hw_read->value = group->perfctr[i];
 	hw_read->time_enabled = time_now() - group->date_enabled[i];
 	hw_read->time_running = group->time_running[i];

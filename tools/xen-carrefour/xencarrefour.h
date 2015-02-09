@@ -21,6 +21,10 @@ int numa_num_configured_cpus(void);
 
 struct bitmask *numa_bitmask_alloc(unsigned int n);
 
+struct bitmask *numa_allocate_cpumask(void);
+
+void numa_free_cpumask(struct bitmask *bmp);
+
 int numa_node_to_cpus(int node, struct bitmask *mask);
 
 int numa_bitmask_isbitset(const struct bitmask *bmp, unsigned int i);
@@ -38,7 +42,7 @@ unsigned long rdmsr(unsigned long addr, int cpu);
 
 double musage(void);
 
-void xen_carrefour_send(const char *str, unsigned long count);
+int xen_carrefour_send(const char *str, unsigned long count);
 
 
 /* === Perf counters backend =============================================== */

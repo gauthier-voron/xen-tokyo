@@ -35,6 +35,16 @@ struct bitmask *numa_bitmask_alloc(unsigned int n)
 	return calloc((n / s) + !(n % s), s);
 }
 
+struct bitmask *numa_allocate_cpumask(void)
+{
+	return numa_bitmask_alloc(numa_num_configured_cpus());
+}
+
+void numa_free_cpumask(struct bitmask *bmp)
+{
+	free(bmp);
+}
+
 int numa_node_to_cpus(int node, struct bitmask *mask)
 {
 	unsigned int i;

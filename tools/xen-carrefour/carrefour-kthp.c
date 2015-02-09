@@ -17,9 +17,9 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
 #include "carrefour.h"
-#include <gsl/gsl_statistics.h>
 #include <sys/sysinfo.h>
 #include <sys/time.h>
+#include "xencarrefour.h"
 
 static const int sleep_time_carrefour_efficient       = 1*TIME_SECOND;     /* Profile by sleep_time useconds chunks */
 static const int sleep_time_carrefour_not_efficient   = 5*TIME_SECOND;     /* Profile by sleep_time useconds chunks */
@@ -52,7 +52,7 @@ static const int sleep_time_kthp                      = 1*TIME_SECOND;
 #define ENABLE_LOCK_CONT_METRIC     0
 #define LOCK_CONT_THRESHOLD         5
 
-#define ENABLE_IBS_ASSIST           0
+/* #define ENABLE_IBS_ASSIST           0 */
 
 #define EVALUATE_EFFICIENCY         1
 #define EFFICIENCY_THRESHOLD        10 // Worth if it improves by X percent
@@ -73,7 +73,6 @@ static const int sleep_time_kthp                      = 1*TIME_SECOND;
 #endif
 
 static void sig_handler(int signal);
-static long sys_perf_counter_open(struct perf_event_attr *hw_event, pid_t pid, int cpu, int group_fd, unsigned long flags);
 
 /*
  * Events :
@@ -237,26 +236,14 @@ static int cpu_of_node(int node) {
 
 static inline void change_carrefour_state_str(char * str) {
    if(str) {
-      FILE *ibs_ctl = fopen("/proc/inter_cntl", "w");
-      if(ibs_ctl) {
-         int len = strlen(str);
-         fwrite(str, 1, len, ibs_ctl);
-         // That's not safe. Todo check for errors
-         fclose(ibs_ctl);
-      }
-      else {
+	   if(xen_carrefour_send(str, strlen(str)) <= 0) {
          printf("[WARNING] Cannot open the carrefour file. Is carrefour loaded?\n");
       }
    }
 }
 
 static inline void change_carrefour_state(char c) {
-   FILE *ibs_ctl = fopen("/proc/inter_cntl", "w");
-   if(ibs_ctl) {
-      fputc(c, ibs_ctl);
-      fclose(ibs_ctl);
-   }
-   else {
+   if(xen_carrefour_send(&c, 1) <= 0) {
       printf("Cannot open the carrefour file. Is carrefour loaded?\n");
    }
 }
@@ -831,7 +818,7 @@ static void thread_loop() {
          events_attr_per_node[i*nb_events_per_node + j].exclude_kernel = per_node_events[j].exclude_kernel;
          events_attr_per_node[i*nb_events_per_node + j].exclude_user = per_node_events[j].exclude_user;
          events_attr_per_node[i*nb_events_per_node + j].read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-         fd_per_node[i*nb_events_per_node + j] = sys_perf_counter_open(&events_attr_per_node[i*nb_events_per_node + j], -1, core, (per_node_events[j].leader==-1)?-1:fd_per_node[i*nb_events_per_node + per_node_events[j].leader], 0);
+         fd_per_node[i*nb_events_per_node + j] = xen_open_hwc(&events_attr_per_node[i*nb_events_per_node + j], -1, core, (per_node_events[j].leader==-1)?-1:fd_per_node[i*nb_events_per_node + per_node_events[j].leader], 0);
 
          if (fd_per_node[i*nb_events_per_node + j] < 0) {
             printf("#[%d] sys_perf_counter_open failed: %s\n", core, strerror(errno));
@@ -855,7 +842,7 @@ static void thread_loop() {
          events_attr_per_core[i*nb_events_per_core + j].exclude_kernel = per_core_events[j].exclude_kernel;
          events_attr_per_core[i*nb_events_per_core + j].exclude_user = per_core_events[j].exclude_user;
          events_attr_per_core[i*nb_events_per_core + j].read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-         fd_per_core[i*nb_events_per_core + j] = sys_perf_counter_open(&events_attr_per_core[i*nb_events_per_core + j], -1, i, (per_core_events[j].leader==-1)?-1:fd_per_core[i*nb_events_per_core + per_core_events[j].leader], 0);
+         fd_per_core[i*nb_events_per_core + j] = xen_open_hwc(&events_attr_per_core[i*nb_events_per_core + j], -1, i, (per_core_events[j].leader==-1)?-1:fd_per_core[i*nb_events_per_core + per_core_events[j].leader], 0);
 
          if (fd_per_core[i*nb_events_per_core + j] < 0) {
             printf("#[%d] sys_perf_counter_open failed: %s\n", i, strerror(errno));
@@ -898,7 +885,6 @@ static void thread_loop() {
       int ibs_decision_feedback;
       int nr_thp;
       
-      struct sysinfo info;
       struct kernel_feedback_t feedback;
 
       int should_enable_carrefour, should_enable_kthp, should_enable_profiling; 
@@ -947,7 +933,7 @@ static void thread_loop() {
       // First read per node counters
       for(i = 0; i < nb_nodes; i++) {
          for (j = 0; j < nb_events_per_node; j++) {
-            assert(read(fd_per_node[i*nb_events_per_node + j], &single_count, sizeof(single_count)) == sizeof(single_count));
+            assert(xen_read_hwc(fd_per_node[i*nb_events_per_node + j], &single_count) == sizeof(single_count));
 
             if(!quiet) {
                //#Event   Core  Time        Samples  % time enabled logical time
@@ -971,7 +957,7 @@ static void thread_loop() {
       // Then read per core counters
       for(i = 0; i < nb_cores; i++) {
          for (j = 0; j < nb_events_per_core; j++) {
-            assert(read(fd_per_core[i*nb_events_per_core + j], &single_count, sizeof(single_count)) == sizeof(single_count));
+            assert(xen_read_hwc(fd_per_core[i*nb_events_per_core + j], &single_count) == sizeof(single_count));
       
             if(!quiet) {
                //#Event   Core  Time        Samples  % time enabled logical time
@@ -995,13 +981,7 @@ static void thread_loop() {
          memset(&hwc_feedback, 0, sizeof(struct hwc_feedback_t));
          dram_accesses(last_counts_per_node, last_counts_prev_per_node, &hwc_feedback);
          
-         if (sysinfo(&info) != 0) {
-            printf("sysinfo: error reading system statistics");
-            hwc_feedback.mem_usage = 0;
-         }
-         else {
-            hwc_feedback.mem_usage =  (double) (info.totalram-info.freeram) / (double) info.totalram * 100.;
-         }
+	 hwc_feedback.mem_usage = musage();
       }
 
       memset(per_core_sum, 0, nb_events_per_core * sizeof(unsigned long));
@@ -1038,7 +1018,7 @@ static void thread_loop() {
                feedback.mmlock, feedback.spinlock, feedback.mmap, feedback.brk, feedback.munmap, feedback.mprotect, nr_thp);
       }
 
-      if(should_enable_carrefour && carrefour_has_been_enabled_once) {
+      if(should_enable_carrefour && carrefour_has_been_enabled_once && 0) {
          int split = get_split_decision();
          if(! was_efficient(&previous_hwc_feedback, &hwc_feedback) && !split) {
             if(carrefour_was_enabled) {
@@ -1082,17 +1062,6 @@ static void thread_loop() {
    return;
 }
 
-
-static long sys_perf_counter_open(struct perf_event_attr *hw_event, pid_t pid, int cpu, int group_fd, unsigned long flags) {
-   int ret = syscall(__NR_perf_counter_open, hw_event, pid, cpu, group_fd, flags);
-#  if defined(__x86_64__) || defined(__i386__)
-   if (ret < 0 && ret > -4096) {
-      errno = -ret;
-      ret = -1;
-   }
-#  endif
-   return ret;
-}
 
 static void sig_handler(int signal) {
    printf("#signal caught: %d\n", signal);
@@ -1158,10 +1127,10 @@ int main(int argc, char**argv) {
          enable_carrefour = 0;
          printf("Disabling carrefour\n");
       }
-      else if(!strcmp(argv[i], "--disable-kthp")) {
-         enable_kthp = 0;
-         printf("Disabling kthp\n");
-      }
+      /* else if(!strcmp(argv[i], "--disable-kthp")) { */
+      /*    enable_kthp = 0; */
+      /*    printf("Disabling kthp\n"); */
+      /* } */
       else if(!strcmp(argv[i], "-q")) {
          quiet = 1;
       }
@@ -1171,8 +1140,11 @@ int main(int argc, char**argv) {
       }
    }   
 
+   enable_kthp = 0;
+   printf("Disabling kthp\n");
+   
    nb_nodes = numa_num_configured_nodes();
-   nb_cores = get_nprocs();
+   nb_cores = numa_num_configured_cpus();
 
    fprintf(stderr, "#NB cpus :\t%d\n", nb_cores);
    fprintf(stderr, "#NB nodes :\t%d\n", nb_nodes);
@@ -1221,7 +1193,9 @@ int main(int argc, char**argv) {
    printf("\tENABLE_LOCK_CONT_METRIC = %d\n", ENABLE_LOCK_CONT_METRIC);
    printf("\tLOCK_CONT_THRESHOLD = %d\n", LOCK_CONT_THRESHOLD);
 
+#if ENABLE_IBS_ASSIST
    printf("\tENABLE_IBS_ASSIST = %d\n", ENABLE_IBS_ASSIST);
+#endif
 
    printf("\tEVALUATE_EFFICIENCY = %d\n", EVALUATE_EFFICIENCY);
    printf("\tEFFICIENCY_THRESHOLD = %d\n", EFFICIENCY_THRESHOLD);

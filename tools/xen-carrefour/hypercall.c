@@ -1,4 +1,6 @@
+#include <alloca.h>
 #include <stdio.h>
+#include <string.h>
 #include "xc_private.h"
 
 
@@ -74,7 +76,7 @@ double musage(void)
 		/ ((double) sysctl.u.physinfo.total_pages);
 }
 
-void xen_carrefour_send(const char *str, unsigned long count)
+int xen_carrefour_send(const char *str, unsigned long count)
 {
 	unsigned long *cmd;
 	int ret;
@@ -87,8 +89,5 @@ void xen_carrefour_send(const char *str, unsigned long count)
 	if (hypercall(HYPERCALL_BIGOS_CFR_WRITE, cmd, &ret) != 0)
 		fprintf(stderr, "ERROR: cannot hypercall for WRITE(%s, %lu)\n",
 			((char *) &cmd[1]), count);
-	if (ret != count)
-		fprintf(stderr, "ERROR: hypercall failed for WRITE(%s, %lu) "
-			"-> %d\n",
-			((char *) &cmd[1]), count, ret);
+	return ret;
 }

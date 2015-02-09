@@ -1,20 +1,25 @@
-CFLAGS = -Wall
-LDLIBS = -lpthread -lrt -lxenctrl -lm
+LIBGSL = $(shell gsl-config --libs)
+
+CC = gcc
+CFLAGS = -Wall -Werror
+LDLIBS = -lpthread -lnuma ${LIBGSL}
+
+NB_NODES = $(shell lscpu | awk '/NUMA node\(s\)/ {print $$3}')
+CFLAGS += -DNB_NODES=${NB_NODES}
 
 .PHONY: all clean
 
-all: carrefour
+all: carrefour-kthp tags
 
-carrefour: carrefour.c carrefour.h xencarrefour.c xencarrefour.h \
-           perfctr.c hypercall.c xc_private.h
+carrefour-kthp: carrefour-kthp.c carrefour.h
 
-tags: carrefour.c carrefour.h xencarrefour.c xencarrefour.h
+tags: carrefour-kthp.c carrefour.h
 	ctags --totals `find . -name '*.[ch]'`
 	cscope -b -q -k -R -s.
 
 clean_tags:
-	-rm cscope.*
-	-rm tags
+	rm cscope.*
+	rm tags
 
 clean: clean_tags
-	-rm -f carrefour *o
+	rm -f carrefour-kthp *.o

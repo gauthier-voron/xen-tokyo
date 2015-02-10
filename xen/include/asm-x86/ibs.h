@@ -68,9 +68,11 @@
 #define IBS_RECORD_WCMEMACC      (1UL << 13)  /* data cache WC mem access */
 #define IBS_RECORD_DCMISACC      (1UL <<  8)  /* data cache misaligned pnlty */
 #define IBS_RECORD_DCMISS        (1UL <<  7)  /* data cache miss */
-#define IBS_RECORD_TLBHIT1G      (1UL <<  5)  /* data L1 TLB hit 1G */
-#define IBS_RECORD_TLBHIT2M      (1UL <<  4)  /* data L1 TLB hit 2M */
-#define IBS_RECORD_DCTLBMISS     (1UL <<  2)  /* data L1 TLB miss */
+#define IBS_RECORD_L2TLBHIT2M    (1UL <<  6)  /* data L2 TLB hit 2M */
+#define IBS_RECORD_L1TLBHIT1G    (1UL <<  5)  /* data L1 TLB hit 1G */
+#define IBS_RECORD_L1TLBHIT2M    (1UL <<  4)  /* data L1 TLB hit 2M */
+#define IBS_RECORD_DCL2TLBMISS   (1UL <<  3)  /* data L2 TLB miss */
+#define IBS_RECORD_DCL1TLBMISS   (1UL <<  2)  /* data L1 TLB miss */
 #define IBS_RECORD_STOP          (1UL <<  1)  /* store operation */
 #define IBS_RECORD_LDOP          (1UL <<  0)  /* load operation */
 

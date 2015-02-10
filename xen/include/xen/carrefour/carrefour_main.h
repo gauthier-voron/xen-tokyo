@@ -30,6 +30,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #define MADV_DONTREPLICATE 64
 #endif
 
+#define HPAGE_SIZE  (PAGE_SIZE << PAGE_ORDER_2M)
 #define SDPAGE_MASK (~(PAGE_SIZE-1))
 #define HGPAGE_MASK (~(HPAGE_SIZE-1))
 
@@ -51,7 +52,7 @@ struct page_to_node {
 /* #include "ibs_main.h" */
 #include <xen/carrefour/carrefour.h>
 #include <xen/carrefour/carrefour_machine.h>
-/* #include "carrefour_rbtree.h" */
+#include <xen/carrefour/carrefour_rbtree.h>
 /* #include "carrefour_tid_replication.h" */
 
 #endif

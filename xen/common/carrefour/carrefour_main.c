@@ -44,28 +44,28 @@ int ibs_proc_write(const char *buf, unsigned long count) {
    if (count) {
       c = *buf;
       if (c == 'b' && !running) {
-         printk("start_profiling();\n");
+         start_profiling();
          running = 1;
       } 
       else if (c == 'e' && running) {
          enable_carrefour = 1;
-         printk("stop_profiling();\n");
+         stop_profiling();
          running = 0;
       } 
       else if (c == 'x' && running) {
          enable_carrefour = 0;
-         printk("stop_profiling();\n");
+         stop_profiling();
         
          /* if(carrefour_module_options[ADAPTIVE_SAMPLING].value) {  */
          /*    //printk("[ADAPTIVE] Carrefour disabled, reducing the IBS sampling rate\n"); */
          /*    sampling_rate = (unsigned long) carrefour_module_options[IBS_RATE_CHEAP].value; */
          /* } */
 
-         printk("start_profiling();\n");
+         start_profiling();
       }
       else if (c == 'k' && running) {
          enable_carrefour = 0;
-         printk("stop_profiling();\n");
+         stop_profiling();
          running = 0;
       }
       else if (c == 'i') {
@@ -164,7 +164,7 @@ unsigned long time_start_profiling;
 int start_profiling(void) {
    rdtscll(time_start_profiling);
 
-   printk("rbtree_init();\n");
+   rbtree_init();
    printk("carrefour_init();\n");
 
    printk("ibs_start();\n");
@@ -218,7 +218,7 @@ int stop_profiling(void) {
    }
 
    /** free all memory **/
-   printk("rbtree_clean();\n");
+   rbtree_clean();
    printk("carrefour_clean();\n");
 
    rdtscll(time_after_stop_profiling);
@@ -288,7 +288,7 @@ int carrefour_init_module(void) {
 
    machine_init();
 
-   printk("rbtree_load_module();\n");
+   rbtree_load_module();
 
    printk("reset_carrefour_hooks();\n");
 
@@ -306,7 +306,7 @@ int carrefour_init_module(void) {
 void carrefour_exit_module(void) {
    printk("ibs_exit();\n");
 
-   printk("rbtree_remove_module();\n");
+   rbtree_remove_module();
 
    printk("sdp: shutdown\n");
 }

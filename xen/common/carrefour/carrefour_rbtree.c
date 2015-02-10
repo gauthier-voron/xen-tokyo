@@ -228,7 +228,7 @@ static inline int _fetch_page(struct pagetree * tree, unsigned long lin_addr, un
    return new;
 }
 
-static inline void _update_page_stat (struct sdpage * page, int node, int tid_index, struct ibs_record * ibs_op) {
+static inline void _update_page_stat (struct sdpage * page, int node, int tid_index, const struct ibs_record * ibs_op) {
    if(page) {
       if(node >= num_online_nodes() || node < 0) {
          printk("Strange node %d\n", node);
@@ -257,7 +257,7 @@ static inline void _update_page_stat (struct sdpage * page, int node, int tid_in
 }
 
 
-void rbtree_add_sample(int is_hypervisor, struct ibs_record *ibs_op, int cpu, int vcpu, int domain) {
+void rbtree_add_sample(int is_hypervisor, const struct ibs_record *ibs_op, int cpu, int vcpu, int domain) {
    struct sdpage *s_page;
    struct rbtree_stats_t* core_stats;
 

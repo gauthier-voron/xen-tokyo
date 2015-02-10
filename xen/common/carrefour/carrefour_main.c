@@ -167,7 +167,7 @@ int start_profiling(void) {
    rbtree_init();
    carrefour_init();
 
-   printk("ibs_start();\n");
+   carrefour_ibs_start();
 
    printk("reset_carrefour_stats();\n");
 
@@ -198,7 +198,7 @@ int stop_profiling(void) {
             enable_migration    ? "enabled" : "disabled",
             sampling_rate == carrefour_module_options[IBS_RATE_ACCURATE].value ? "accurate" : "cheap");
 
-   printk("ibs_stop();\n");
+   carrefour_ibs_stop();
 
    if(enable_carrefour) {
       carrefour();
@@ -277,8 +277,7 @@ int carrefour_init_module(void) {
    print_module_options();
    //
 
-   printk("err = ibs_init();\n");
-   err = 0;
+   err = carrefour_ibs_init();
 
    if(err) {
       return err;
@@ -302,7 +301,7 @@ int carrefour_init_module(void) {
 }
 
 void carrefour_exit_module(void) {
-   printk("ibs_exit();\n");
+   carrefour_ibs_exit();
 
    rbtree_remove_module();
 

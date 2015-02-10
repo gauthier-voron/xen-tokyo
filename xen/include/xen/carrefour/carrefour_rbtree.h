@@ -73,7 +73,7 @@ void rbtree_load_module(void);
 void rbtree_remove_module(void);
 
 void rbtree_init(void);
-void rbtree_add_sample(int is_hypervisor, struct ibs_record *ibs_op, int cpu, int vcpu, int domain);
+void rbtree_add_sample(int is_hypervisor, const struct ibs_record *ibs_op, int cpu, int vcpu, int domain);
 void rbtree_print(struct pagetree * tree); 
 void rbtree_clean(void);
 void rbtree_get_merged_stats(struct rbtree_stats_t * stats_to_fill, struct carrefour_run_stats * c_stats);

@@ -18,6 +18,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
 #include <asm/msr.h>
+#include <xen/carrefour/carrefour_alloc.h>
 #include <xen/carrefour/carrefour_main.h>
 #include <xen/cpumask.h>
 #include <xen/lib.h>
@@ -38,7 +39,7 @@ extern unsigned enable_migration;
 extern unsigned long sampling_rate;
 extern unsigned long nr_accesses_node[MAX_NUMNODES];
 
-int ibs_proc_write(const char *buf, unsigned long count) {
+int ibs_proc_write(char *buf, unsigned long count) {
    char c;
 
    if (count) {
@@ -56,10 +57,10 @@ int ibs_proc_write(const char *buf, unsigned long count) {
          enable_carrefour = 0;
          stop_profiling();
         
-         /* if(carrefour_module_options[ADAPTIVE_SAMPLING].value) {  */
-         /*    //printk("[ADAPTIVE] Carrefour disabled, reducing the IBS sampling rate\n"); */
-         /*    sampling_rate = (unsigned long) carrefour_module_options[IBS_RATE_CHEAP].value; */
-         /* } */
+         if(carrefour_module_options[ADAPTIVE_SAMPLING].value) {
+            //printk("[ADAPTIVE] Carrefour disabled, reducing the IBS sampling rate\n");
+            sampling_rate = (unsigned long) carrefour_module_options[IBS_RATE_CHEAP].value;
+         }
 
          start_profiling();
       }
@@ -74,58 +75,52 @@ int ibs_proc_write(const char *buf, unsigned long count) {
       else if (c == 'I') {
          enable_interleaving = 1;
       }
-      /* else if (c == 'T') { */
-      /*    if(count > 1) { */
-      /*       /\* get buffer size *\/ */
-      /*       char * buf_tmp = kmalloc(count, GFP_KERNEL | __GFP_ZERO); */
-      /*       char * index = buf_tmp; */
-      /*       char * next_idx; */
-      /*       int node = 0; */
+      else if (c == 'T') {
+         if(count > 1) {
+            /* get buffer size */
+            char * index = buf;
+            char * next_idx;
+            int node = 0;
 
-      /*       if (copy_from_user(buf_tmp, buf, count)) { */
-      /*          return -EFAULT; */
-      /*       } */
-           
-      /*       // Skip the I */
-      /*       index++; */
+            // Skip the I
+            index++;
 
-      /*       for (next_idx = index; next_idx < buf_tmp + count; next_idx++) { */
-      /*          if(*next_idx == ',' || next_idx == (buf_tmp + count -1)) { */
-      /*             unsigned long value; */
-      /*             if(*next_idx == ',') { */
-      /*                *next_idx = 0; */
-      /*             } */
+            for (next_idx = index; next_idx < buf + count; next_idx++) {
+               if(*next_idx == ',' || next_idx == (buf + count -1)) {
+                  unsigned long value;
+                  if(*next_idx == ',') {
+                     *next_idx = 0;
+                  }
 
-      /*             if(kstrtol(index, 10, &value) < 0) { */
-      /*                printk("Value is %s (%lu)\n", index, value);  */
-      /*                printk(KERN_WARNING "Strange bug\n"); */
-      /*                memset(&nr_accesses_node, 0, sizeof(unsigned long) * MAX_NUMNODES); */
-      /*                break; */
-      /*             } */
-      /*             nr_accesses_node[node++] = value; */
-      /*             index = next_idx+1; */
+                  if((value = simple_strtol(index, NULL, 10)) < 0) {
+                     printk("Value is %s (%lu)\n", index, value);
+                     printk(KERN_WARNING "Strange bug\n");
+                     memset(&nr_accesses_node, 0, sizeof(unsigned long) * MAX_NUMNODES);
+                     break;
+                  }
+                  nr_accesses_node[node++] = value;
+                  index = next_idx+1;
 
-      /*             //printk("Node %d --> %lu\n", node -1, nr_accesses_node[node-1]); */
-      /*          } */
-      /*       } */
-            
-      /*       kfree(buf_tmp);  */
-      /*    } */
-      /* } */
-      /* else if (c == 'Z') { */
-      /*    int pid, enabled; */
-      /*    int ret = sscanf(buf, "Z\t%d\t%d\n", &pid, &enabled); */
-      /*    if(ret != 2) { */
-      /*       printk("Error %s\n", buf); */
-      /*    } else { */
-      /*       printk("Replication for pid %d => %d\n", pid, enabled); */
-      /*       printk("change_replication_state(pid, enabled);\n"); */
+                  //printk("Node %d --> %lu\n", node -1, nr_accesses_node[node-1]);
+               }
+            }
+         }
+      }
+      else if (c == 'Z') {
+         int pid, enabled;
+         pid = simple_strtol(buf + 2, (const char **) &buf, 10);
+         enabled = simple_strtol(buf + 1, NULL, 10);
+         if(pid < 0 || enabled < 0) {
+            printk("Error %s\n", buf);
+         } else {
+            printk("Replication for pid %d => %d\n", pid, enabled);
+            printk("change_replication_state(pid, enabled);\n");
 
-      /*       if(enabled) { */
-      /*          enable_replication = 1; */
-      /*       } */
-      /*    } */
-      /* } */
+            if(enabled) {
+               enable_replication = 1;
+            }
+         }
+      }
       else if (c == 'r') {
          enable_replication = 0;
       }
@@ -139,14 +134,14 @@ int ibs_proc_write(const char *buf, unsigned long count) {
          enable_migration = 0;
       }
 
-      /* else if (c == 'F' && carrefour_module_options[ADAPTIVE_SAMPLING].value) { */
-      /*    // Increases the ibs frequency */
-      /*    sampling_rate = carrefour_module_options[IBS_RATE_ACCURATE].value; */
-      /* } */
-      /* else if (c == 'f' && carrefour_module_options[ADAPTIVE_SAMPLING].value) { */
-      /*    // Decreases the ibs frequency */
-      /*    sampling_rate = carrefour_module_options[IBS_RATE_CHEAP].value; */
-      /* } */
+      else if (c == 'F' && carrefour_module_options[ADAPTIVE_SAMPLING].value) {
+         // Increases the ibs frequency
+         sampling_rate = carrefour_module_options[IBS_RATE_ACCURATE].value;
+      }
+      else if (c == 'f' && carrefour_module_options[ADAPTIVE_SAMPLING].value) {
+         // Decreases the ibs frequency
+         sampling_rate = carrefour_module_options[IBS_RATE_CHEAP].value;
+      }
       /* else if (c == 'a') { */
       /*    struct carrefour_options_t opt; */
       /*    opt = get_carrefour_hooks_conf(); */

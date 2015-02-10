@@ -165,7 +165,7 @@ int start_profiling(void) {
    rdtscll(time_start_profiling);
 
    rbtree_init();
-   printk("carrefour_init();\n");
+   carrefour_init();
 
    printk("ibs_start();\n");
 
@@ -200,11 +200,9 @@ int stop_profiling(void) {
 
    printk("ibs_stop();\n");
 
-   printk(
-   "if(enable_carrefour) {\n"
-   "   carrefour();\n"
-   "}\n"
-       );
+   if(enable_carrefour) {
+      carrefour();
+   }
    
    if(carrefour_module_options[ADAPTIVE_SAMPLING].value) {
       if(run_stats.total_nr_orders < carrefour_module_options[IBS_ADAPTIVE_MAGIC].value) {
@@ -219,7 +217,7 @@ int stop_profiling(void) {
 
    /** free all memory **/
    rbtree_clean();
-   printk("carrefour_clean();\n");
+   carrefour_clean();
 
    rdtscll(time_after_stop_profiling);
    if(num_online_cpus() > 0 && (time_after_stop_profiling - time_start_profiling > 0)) {

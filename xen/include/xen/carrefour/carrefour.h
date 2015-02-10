@@ -41,7 +41,7 @@ struct carrefour_run_stats {
    unsigned nb_interleave_orders;
    unsigned nb_replication_orders;
 
-   double avg_nr_samples_per_page;
+   unsigned long avg_nr_samples_per_page;
 
    unsigned long nr_of_samples_after_order;
    unsigned long nr_of_process_pages_touched;

@@ -18,6 +18,3 @@ struct carrefour_global_stats global_stats;
 
 
 struct carrefour_run_stats run_stats;
-
-
-const struct carrefour_module_option_t carrefour_module_options[CARREFOUR_OPTIONS_MAX];

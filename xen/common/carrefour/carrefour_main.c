@@ -271,13 +271,12 @@ int carrefour_init_module(void) {
 
 
    // Module options
-   printk(
-   "if(! validate_module_options()) {\n"
-   "   printk(\"Invalid options\n\");\n"
-   "   return -1;\n"
-   "}\n");
+   if(! validate_module_options()) {
+      printk("Invalid options\n");
+      return -1;
+   }
 
-   printk("print_module_options();\n");
+   print_module_options();
    //
 
    printk("err = ibs_init();\n");
@@ -287,8 +286,7 @@ int carrefour_init_module(void) {
       return err;
    }
 
-   printk("ibs_create_procs_files();\n");
-   printk("machine_init();\n");
+   machine_init();
 
    printk("rbtree_load_module();\n");
 
@@ -306,10 +304,9 @@ int carrefour_init_module(void) {
 }
 
 void carrefour_exit_module(void) {
-	printk("ibs_exit();\n");
-    printk("ibs_remove_proc_files();\n");
+   printk("ibs_exit();\n");
 
-    printk("rbtree_remove_module();\n");
+   printk("rbtree_remove_module();\n");
 
    printk("sdp: shutdown\n");
 }

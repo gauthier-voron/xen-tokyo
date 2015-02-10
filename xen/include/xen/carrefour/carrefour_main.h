@@ -50,7 +50,7 @@ struct page_to_node {
 /* #include "ibs_struct.h" */
 /* #include "ibs_main.h" */
 #include <xen/carrefour/carrefour.h>
-/* #include "carrefour_machine.h" */
+#include <xen/carrefour/carrefour_machine.h>
 /* #include "carrefour_rbtree.h" */
 /* #include "carrefour_tid_replication.h" */
 

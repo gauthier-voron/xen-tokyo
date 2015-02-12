@@ -58,6 +58,7 @@ obj-y += mcooldown.o
 
 obj-y += carrefour/carrefour.o
 obj-y += carrefour/carrefour_alloc.o
+obj-y += carrefour/carrefour_hooks.o
 obj-y += carrefour/carrefour_ibs.o
 obj-y += carrefour/carrefour_main.o
 obj-y += carrefour/carrefour_machine.o

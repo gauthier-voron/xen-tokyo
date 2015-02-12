@@ -47,6 +47,7 @@ struct page_to_node {
 };
 
 /* #include "console.h" */
+#include <xen/carrefour/carrefour_hooks.h>
 #include <xen/carrefour/carrefour_options.h>
 #include <xen/carrefour/carrefour_ibs.h>
 #include <xen/carrefour/carrefour.h>

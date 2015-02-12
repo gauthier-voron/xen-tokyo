@@ -476,8 +476,7 @@ void decide_pages_fate(void) {
       int err;
 
       //printk("Moving %d pages of pid %d!\n", p->nb_pages, p->tgid);
-      printk("err = s_migrate_pages(p->domain, p->nb_pages, p->pages, p->nodes, 0);\n");
-      err = -1;
+      err = s_migrate_pages(p->domain, p->nb_pages, p->pages, p->nodes, 0);
 
       if(err) {
          switch(err) {

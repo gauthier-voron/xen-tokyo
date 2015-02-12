@@ -94,7 +94,7 @@ int ibs_proc_write(char *buf, unsigned long count) {
 
                   if((value = simple_strtol(index, NULL, 10)) < 0) {
                      printk("Value is %s (%lu)\n", index, value);
-                     printk(KERN_WARNING "Strange bug\n");
+                     printk("Strange bug\n");
                      memset(&nr_accesses_node, 0, sizeof(unsigned long) * MAX_NUMNODES);
                      break;
                   }

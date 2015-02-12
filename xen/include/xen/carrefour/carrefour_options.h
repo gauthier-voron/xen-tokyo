@@ -67,12 +67,6 @@ struct carrefour_module_option_t {
    int      value;
 };
 
-struct carrefour_options_t {
-   int page_bouncing_fix_4k;
-   int page_bouncing_fix_2M;
-   int async_4k_migrations;
-};
-
 extern const struct carrefour_module_option_t carrefour_module_options[CARREFOUR_OPTIONS_MAX];
 
 void print_module_options (void);

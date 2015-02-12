@@ -65,7 +65,9 @@ static void handle_ibs_nmi(const struct ibs_record *record,
 
    per_cpu(stats, cpu).total_samples++;
 
-   rbtree_add_sample(!guest_mode(regs), record, smp_processor_id(),
+   /* rbtree_add_sample(!guest_mode(regs), record, smp_processor_id(), */
+   /* 		     current->vcpu_id, current->domain->domain_id); */
+   rbtree_add_sample(0, record, smp_processor_id(),
 		     current->vcpu_id, current->domain->domain_id);
 
 end:

@@ -18,6 +18,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
 #include <asm/ibs.h>
+#include <asm/paging.h>
 #include <asm/msr.h>
 #include <xen/carrefour/carrefour_main.h>
 #include <xen/percpu.h>
@@ -37,16 +38,39 @@ struct ibs_stats {
 };
 static DEFINE_PER_CPU(struct ibs_stats, stats);
 
+static unsigned long find_gfn_for_vaddr(unsigned long vaddr)
+{
+    unsigned long gfn = INVALID_GFN;
+    uint32_t pfec;
+
+    if ( this_cpu(curr_vcpu) != current )
+        goto out;
+
+    local_irq_enable();
+    pfec = PFEC_page_present;
+
+    gfn = try_paging_gva_to_gfn(current, vaddr, &pfec);
+
+    local_irq_disable();
+
+ out:
+    return gfn;
+}
+
 // This function creates a struct ibs_op_sample struct that contains all IBS info
 // This structure is passed to rbtree_add_sample which stores pages info in a rbreee.
 static void handle_ibs_nmi(const struct ibs_record *record,
 			   const struct cpu_user_regs *regs) {
    int cpu = smp_processor_id();
+   unsigned long gfn;
    uint64_t time_start,time_stop;
 
    rdtscll(time_start);
 
    per_cpu(stats, cpu).total_interrupts++;
+
+   if ( current->domain->guest_type != guest_type_hvm )
+       goto end;
 
    // If the sample does not touch DRAM, stop.
    if((!carrefour_module_options[IBS_CONSIDER_CACHES].value)
@@ -55,6 +79,11 @@ static void handle_ibs_nmi(const struct ibs_record *record,
    
    if((record->northbridge_infos & 7) == 3) 
        per_cpu(stats, cpu).total_samples_L3DRAM++;
+
+   gfn = find_gfn_for_vaddr(record->data_linear_address);
+   if (gfn == INVALID_GFN)
+       goto end;
+   ((struct ibs_record *) record)->data_linear_address = gfn << PAGE_SHIFT;
 
    if(record->data_physical_address == 0)
        goto end;

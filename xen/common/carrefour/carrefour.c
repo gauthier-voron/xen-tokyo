@@ -307,7 +307,7 @@ void decide_pages_fate(void) {
       if(!this->huge) {
          /** We first check if the page is valid and if it is a huge page **/
 	 int ret = 0;
-	 printk("int ret = is_huge_addr_sloppy(this->domain, (unsigned long) this->page_lin);\n");
+	 /* printk("int ret = is_huge_addr_sloppy(this->domain, (unsigned long) this->page_lin);\n"); */
          
          this->invalid = 0;
          this->huge = 0;

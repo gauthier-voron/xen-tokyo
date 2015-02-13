@@ -1,3 +1,4 @@
+#include <asm/atomic.h>
 #include <asm/ibs.h>
 #include <asm/msr.h>
 #include <asm/processor.h>
@@ -18,6 +19,11 @@ static int ibs_acquired = 0;
 
 static int ibs_enabled = 0;
 
+static DEFINE_PER_CPU(int, handler_state);
+#define HANDLER_STOPPED         0
+#define HANDLER_READY           1
+#define HANDLER_RUNNING         2
+
 static void (*ibs_handler)(const struct ibs_record *record,
 			   const struct cpu_user_regs *regs) = NULL;
 
@@ -27,6 +33,10 @@ int nmi_ibs(const struct cpu_user_regs *regs)
     u64 val;
     int ret = 0;
     struct ibs_record record;
+
+    if ( cmpxchg(&this_cpu(handler_state), HANDLER_READY, HANDLER_RUNNING)
+	 != HANDLER_READY )
+	    return 1;
 
     rdmsr_safe(MSR_AMD64_IBSFETCHCTL, val);
     if ( val & IBS_FETCH_ENABLE && val & IBS_FETCH_VAL )
@@ -83,6 +93,8 @@ int nmi_ibs(const struct cpu_user_regs *regs)
         wrmsr_safe(MSR_AMD64_IBSOPCTL, val);
         ret = 1;
     }
+
+    (void) cmpxchg(&this_cpu(handler_state), HANDLER_RUNNING, HANDLER_READY);
 
     return ret;
 }
@@ -154,7 +166,7 @@ int ibs_sethandler(void (*handler)(const struct ibs_record *record,
 
 int ibs_enable(void)
 {
-    int ret;
+    int ret, cpu;
 
     if ( !ibs_acquired )
         return -1;
@@ -162,13 +174,24 @@ int ibs_enable(void)
     if ( ret )
         return ret;
     ibs_enabled = 1;
+    for_each_online_cpu ( cpu )
+	while ( cmpxchg(&per_cpu(handler_state, cpu), HANDLER_STOPPED,
+			HANDLER_READY) != HANDLER_STOPPED )
+	    cpu_relax();
     return 0;
 }
 
 void ibs_disable(void)
 {
+    int cpu;
+
     if ( !ibs_enabled )
         return;
     xenoprof_arch_stop();
     ibs_enabled = 0;
+
+    for_each_online_cpu ( cpu )
+	while ( cmpxchg(&per_cpu(handler_state, cpu), HANDLER_READY,
+			HANDLER_STOPPED) != HANDLER_READY )
+	    cpu_relax();
 }

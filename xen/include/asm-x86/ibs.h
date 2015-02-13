@@ -162,6 +162,8 @@ int ibs_enable(void);
 
 /*
  * Stop to sample uops.
+ * If wait is true, wait for every running IBS interrupt to end before to
+ * return.
  */
 void ibs_disable(void);
 

@@ -923,8 +923,6 @@ err:
 
 void stop_monitoring(void)
 {
-    int cpu;
-
     if ( !monitoring_started )
         return;
 
@@ -936,19 +934,6 @@ void stop_monitoring(void)
         disable_monitoring_pebs();
 
     monitoring_started = 0;
-
-    /*
-     * Ensure no NMI interrupt is occuring before to free the data structures
-     * of monitoring.
-     * No need to really lock because IBS/PEBS is disabled but an interrupt
-     * could start before this function execution, so just wait the locks are
-     * free.
-     */
-
-    for_each_online_cpu ( cpu )
-        while ( cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_NONE,
-                        OWNER_NONE) != OWNER_NONE )
-            ;
 
     free_migration_engine();
     free_mcooldown(&migration_cooldown);

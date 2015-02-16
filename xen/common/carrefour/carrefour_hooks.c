@@ -1,3 +1,4 @@
+#include <asm/p2m.h>
 #include <xen/carrefour/carrefour_main.h>
 #include <xen/domain.h>
 #include <xen/lib.h>
@@ -212,149 +213,55 @@
 
 int s_migrate_pages(int domain, unsigned long nr_pages, void ** pages,
 		    int * nodes, int throttle) {
-    unsigned long i;
-    struct domain *d = get_domain_by_id(domain);
+   unsigned long i, err = 0;
+   struct domain *d = get_domain_by_id(domain);
 
-    for (i=0; i<nr_pages; i++)
-	    memory_move(d, ((unsigned long) pages[i]) >> PAGE_SHIFT, nodes[i]);
+   for(i = 0; i < nr_pages; i++) {
+      p2m_type_t p2mt;
+      unsigned long addr = (unsigned long) pages[i];
+      unsigned long gfn = addr >> PAGE_SHIFT;
+      unsigned long mfn = mfn_x(get_gfn(d, gfn, &p2mt));
+      int current_node;
 
-    put_domain(d);
+      put_gfn(d, gfn);
+      /* int current_node; */
 
-    return 0;
-	
-/*    struct task_struct *task; */
-/*    struct mm_struct *mm = NULL; */
+      /* if(carrefour_options.page_bouncing_fix_4k /\* && (page->stats.nr_migrations >= carrefour_options.page_bouncing_fix_4k) *\/) { */
+      /*    //DEBUG_WARNING("Page bouncing fix enable\n"); */
+      /* 	 printk("bouncing fix\n"); */
+      /*    continue; */
+      /* } */
 
-/*    int i = 0; */
-/*    int err = 0; */
+      current_node = phys_to_nid(mfn);
+      if(current_node == nodes[i]) {
+         //DEBUG_WARNING("Current node (%d) = destination node (%d) for page 0x%lx\n", current_node, nodes[i], addr);
+         continue;
+      }
 
-/*    rcu_read_lock(); */
-/*    task = find_task_by_vpid(pid); */
-/*    if(task) { */
-/*       mm = get_task_mm(task); */
-/*    } */
-/*    rcu_read_unlock(); */
+      /* if(throttle || !carrefour_options.async_4k_migrations) { */
+      /*    unsigned allowed = migration_allowed_4k(); */
 
-/*    if (!mm) { */
-/*       err = -ESRCH; */
-/*       goto out_clean; */
-/*    } */
+      /*    if(allowed && memory_move(d, ((unsigned long) pages[i]) >> PAGE_SHIFT, */
+      /* 				   nodes[i])) { */
+      err = (memory_move(d, addr >> PAGE_SHIFT, nodes[i]) == INVALID_MFN);
+      /*       //__DEBUG("Migrating page 0x%lx\n", addr); */
 
-/*    down_read(&mm->mmap_sem); */
+      /*       // FGAUD */
+      /*       if(migration_callback) { */
+      /*          migration_callback(mm, addr); */
+      /*       } */
+      /*    } */
+      /*    else { */
+      /*       if(!allowed) */
+      /*          __DEBUG("migration was not allowed\n"); */
+      /*       //DEBUG_WARNING("[WARNING] Migration of page 0x%lx failed !\n", addr); */
+      /*    } */
+      /* } */
+   }
 
-/*    for(i = 0; i < nr_pages; i++) { */
-/*       struct page * page; */
-/*       struct vm_area_struct *vma; */
+   put_domain(d);
 
-/*       unsigned long addr = (unsigned long) pages[i]; */
-/*       int current_node; */
-
-/*       pte_t* pte; */
-/*       spinlock_t* ptl; */
-
-/*       vma = find_vma(mm, addr); */
-/*       if (!vma || addr < vma->vm_start) { */
-/*          continue; */
-/*       } */
-
-/*       pte = get_locked_pte_from_va (mm->pgd_master, mm, addr, &ptl); */
-
-/*       if(!pte) { */
-/*          continue; */
-/*       } */
-
-/*       page = pte_page(*pte); */
-
-/*       if (IS_ERR(page) || !page) { */
-/*          pte_unmap_unlock(pte, ptl); */
-/*          //DEBUG_WARNING("Cannot migrate a NULL page\n"); */
-/*          continue; */
-/*       } */
-
-/*       get_page(page); */
-
-/*       /\* Don't want to migrate a replicated page *\/ */
-/*       if (PageReplication(page)) { */
-/*          pte_unmap_unlock(pte, ptl); */
-/*          put_page(page); */
-/*          continue; */
-/*       } */
-
-/*       if (PageHuge(page) || PageTransHuge(page)) { */
-/*          DEBUG_WARNING("[WARNING] What am I doing here ?\n"); */
-/*          pte_unmap_unlock(pte, ptl); */
-/*          put_page(page); */
-/*          continue; */
-/*       } */
-
-/*       if(carrefour_options.page_bouncing_fix_4k && (page->stats.nr_migrations >= carrefour_options.page_bouncing_fix_4k)) { */
-/*          //DEBUG_WARNING("Page bouncing fix enable\n"); */
-/*          pte_unmap_unlock(pte, ptl); */
-/*          put_page(page); */
-/*          continue; */
-/*       } */
-
-/*       current_node = page_to_nid(page); */
-/*       if(current_node == nodes[i]) { */
-/*          //DEBUG_WARNING("Current node (%d) = destination node (%d) for page 0x%lx\n", current_node, nodes[i], addr); */
-/*          pte_unmap_unlock(pte, ptl); */
-/*          put_page(page); */
-/*          continue; */
-/*       } */
-
-/*       if(throttle || !carrefour_options.async_4k_migrations) { */
-/*          unsigned allowed = migration_allowed_4k(); */
-/*          pte_unmap_unlock(pte, ptl); */
-
-/*          if(allowed && migrate_misplaced_page(page, nodes[i])) { */
-/*             //__DEBUG("Migrating page 0x%lx\n", addr); */
-
-/*             // FGAUD */
-/*             if(migration_callback) { */
-/*                migration_callback(mm, addr);  */
-/*             } */
-/*          } */
-/*          else { */
-/*             if(!allowed) */
-/*                __DEBUG("migration was not allowed\n"); */
-/*             //DEBUG_WARNING("[WARNING] Migration of page 0x%lx failed !\n", addr); */
-/*          } */
-/*       } */
-/*       else { */
-/*          pte_t new_pte = *pte; */
-/*          pte_unmap_unlock(pte, ptl); */
-
-/*          lock_page(page); */
-
-/*          /\* Confirm the PTE did not while locked *\/ */
-/*          spin_lock(ptl); */
-/*          if (likely(pte_same(new_pte, *pte))) { */
-/*             // TODO: we should lock the page */
-/*             page->dest_node = nodes[i]; */
-
-/*             // Make sure that pmd is tagged as "NUMA" */
-/*             new_pte = pte_mknuma(new_pte); */
-/*             set_pte_at(mm, addr, pte, new_pte); */
-
-/*             /\** FGAUD: We need to flush the TLB, don't we ? **\/ */
-/*             flush_tlb_page(vma, addr); */
-
-/*             /\** And make sure to invalid all copies -- TODO: too many flush **\/ */
-/*             clear_flush_all_node_copies(mm, vma, addr); */
-/*          } */
-
-/*          spin_unlock(ptl); */
-
-/*          unlock_page(page); */
-/*          put_page(page); */
-/*       } */
-/*    } */
-
-/*    up_read(&mm->mmap_sem); */
-/*    mmput(mm); */
-
-/* out_clean: */
-/*    return err; */
+   return err;
 }
 
 /* static struct page *new_page(struct page *p, unsigned long private, int **x) */
@@ -787,9 +694,9 @@ int s_migrate_pages(int domain, unsigned long nr_pages, void ** pages,
 /*    put_cpu_ptr(&carrefour_migration_stats); */
 /*    read_unlock(&carrefour_hook_stats_lock); */
 
-/*    /\*__DEBUG("THROTTLE: %llu %llu %u\n",  */
-/*          (long long unsigned) carrefour_hook_stats.time_spent_in_migration_4k[smp_processor_id()],  */
-/*          (long long unsigned) iteration_length_cycles * num_online_cpus(),  */
+/*    /\*__DEBUG("THROTTLE: %llu %llu %u\n", */
+/*          (long long unsigned) carrefour_hook_stats.time_spent_in_migration_4k[smp_processor_id()], */
+/*          (long long unsigned) iteration_length_cycles * num_online_cpus(), */
 /*          t);*\/ */
 
 /*    return allowed; */

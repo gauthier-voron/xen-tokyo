@@ -88,15 +88,20 @@ static uint32_t set_ad_bits(void *guest_p, void *walk_p, int set_dirty)
 
 /* If the map is non-NULL, we leave this function having 
  * acquired an extra ref on mfn_to_page(*mfn) */
-void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
-                     p2m_type_t *p2mt, p2m_query_t q, uint32_t *rc)
+static void *__map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
+			      p2m_type_t *p2mt, p2m_query_t q, uint32_t *rc,
+			      int abort)
 {
     struct page_info *page;
     void *map;
 
     /* Translate the gfn, unsharing if shared */
-    page = get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn), p2mt, NULL,
-                                 q);
+    if ( !abort )
+	    page = get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn), p2mt,
+					 NULL, q);
+    else
+	    page = try_get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn),
+					     p2mt, NULL, q);
     if ( p2m_is_paging(*p2mt) )
     {
         ASSERT(!p2m_is_nestedp2m(p2m));
@@ -125,15 +130,21 @@ void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
     return map;
 }
 
+void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
+                     p2m_type_t *p2mt, p2m_query_t q, uint32_t *rc)
+{
+    return __map_domain_gfn(p2m, gfn, mfn, p2mt, q, rc, 0);
+}
+
 
 /* Walk the guest pagetables, after the manner of a hardware walker. */
 /* Because the walk is essentially random, it can cause a deadlock 
  * warning in the p2m locking code. Highly unlikely this is an actual
  * deadlock, because who would walk page table in the opposite order? */
-uint32_t
-guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
+static uint32_t
+__guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
                   unsigned long va, walk_t *gw, 
-                  uint32_t pfec, mfn_t top_mfn, void *top_map)
+                  uint32_t pfec, mfn_t top_mfn, void *top_map, int abort)
 {
     struct domain *d = v->domain;
     p2m_type_t p2mt;
@@ -203,12 +214,13 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
     rc |= ((gflags & mflags) ^ mflags);
 
     /* Map the l3 table */
-    l3p = map_domain_gfn(p2m, 
-                         guest_l4e_get_gfn(gw->l4e), 
-                         &gw->l3mfn,
-                         &p2mt,
-                         qt,
-                         &rc); 
+    l3p = __map_domain_gfn(p2m, 
+			   guest_l4e_get_gfn(gw->l4e), 
+			   &gw->l3mfn,
+			   &p2mt,
+			   qt,
+			   &rc,
+			   abort); 
     if(l3p == NULL)
         goto out;
     /* Get the l3e and check its flags*/
@@ -264,12 +276,13 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
 #endif /* PAE or 64... */
 
     /* Map the l2 table */
-    l2p = map_domain_gfn(p2m, 
-                         guest_l3e_get_gfn(gw->l3e), 
-                         &gw->l2mfn,
-                         &p2mt, 
-                         qt,
-                         &rc); 
+    l2p = __map_domain_gfn(p2m, 
+			   guest_l3e_get_gfn(gw->l3e), 
+			   &gw->l2mfn,
+			   &p2mt, 
+			   qt,
+			   &rc,
+			   abort); 
     if(l2p == NULL)
         goto out;
     /* Get the l2e */
@@ -338,12 +351,13 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
     else 
     {
         /* Not a superpage: carry on and find the l1e. */
-        l1p = map_domain_gfn(p2m, 
-                             guest_l2e_get_gfn(gw->l2e), 
-                             &gw->l1mfn,
-                             &p2mt,
-                             qt,
-                             &rc);
+        l1p = __map_domain_gfn(p2m, 
+			       guest_l2e_get_gfn(gw->l2e), 
+			       &gw->l1mfn,
+			       &p2mt,
+			       qt,
+			       &rc,
+			       abort);
         if(l1p == NULL)
             goto out;
         gw->l1e = l1p[guest_l1_table_offset(va)];
@@ -411,4 +425,20 @@ set_ad:
     }
 
     return rc;
+}
+
+uint32_t
+guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
+                  unsigned long va, walk_t *gw, 
+                  uint32_t pfec, mfn_t top_mfn, void *top_map)
+{
+    return __guest_walk_tables(v, p2m, va, gw, pfec, top_mfn, top_map, 0);
+}
+
+uint32_t
+try_guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
+                  unsigned long va, walk_t *gw, 
+                  uint32_t pfec, mfn_t top_mfn, void *top_map)
+{
+    return __guest_walk_tables(v, p2m, va, gw, pfec, top_mfn, top_map, 1);
 }

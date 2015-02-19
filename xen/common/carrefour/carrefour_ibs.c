@@ -46,12 +46,9 @@ static unsigned long find_gfn_for_vaddr(unsigned long vaddr)
     if ( this_cpu(curr_vcpu) != current )
         goto out;
 
-    local_irq_enable();
     pfec = PFEC_page_present;
 
     gfn = try_paging_gva_to_gfn(current, vaddr, &pfec);
-
-    local_irq_disable();
 
  out:
     return gfn;

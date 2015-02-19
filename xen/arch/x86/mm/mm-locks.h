@@ -150,7 +150,7 @@ static inline int _mm_read_trylock(mm_rwlock_t *l, int level)
 {
     if ( !__check_lock_level_safe(level) )
 	return 0;
-    return read_trylock(&l->lock);
+    return read_trylock_safe(&l->lock);
 }
 
 static inline void mm_read_unlock(mm_rwlock_t *l)

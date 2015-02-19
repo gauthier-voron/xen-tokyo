@@ -29,8 +29,17 @@
 #define _hap_gva_to_gfn(levels) hap_gva_to_gfn_##levels##_levels
 #define hap_gva_to_gfn(levels) _hap_gva_to_gfn(levels)
 
+#define _try_hap_gva_to_gfn(levels) try_hap_gva_to_gfn_##levels##_levels
+#define try_hap_gva_to_gfn(levels) _try_hap_gva_to_gfn(levels)
+
+#define ___hap_p2m_ga_to_gfn(levels) __hap_p2m_ga_to_gfn_##levels##_levels
+#define __hap_p2m_ga_to_gfn(levels) ___hap_p2m_ga_to_gfn(levels)
+
 #define _hap_p2m_ga_to_gfn(levels) hap_p2m_ga_to_gfn_##levels##_levels
 #define hap_p2m_ga_to_gfn(levels) _hap_p2m_ga_to_gfn(levels)
+
+#define _try_hap_p2m_ga_to_gfn(levels) try_hap_p2m_ga_to_gfn_##levels##_levels
+#define try_hap_p2m_ga_to_gfn(levels) _try_hap_p2m_ga_to_gfn(levels)
 
 #if GUEST_PAGING_LEVELS > CONFIG_PAGING_LEVELS
 #error GUEST_PAGING_LEVELS must not exceed CONFIG_PAGING_LEVELS
@@ -46,9 +55,17 @@ unsigned long hap_gva_to_gfn(GUEST_PAGING_LEVELS)(
     return hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(v, p2m, cr3, gva, pfec, NULL);
 }
 
-unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
+unsigned long try_hap_gva_to_gfn(GUEST_PAGING_LEVELS)(
+    struct vcpu *v, struct p2m_domain *p2m, unsigned long gva, uint32_t *pfec)
+{
+    unsigned long cr3 = v->arch.hvm_vcpu.guest_cr[3];
+    return try_hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(v, p2m, cr3, gva, pfec, NULL);
+}
+
+
+static unsigned long __hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
     struct vcpu *v, struct p2m_domain *p2m, unsigned long cr3,
-    paddr_t ga, uint32_t *pfec, unsigned int *page_order)
+    paddr_t ga, uint32_t *pfec, unsigned int *page_order, int abort)
 {
     uint32_t missing;
     mfn_t top_mfn;
@@ -60,8 +77,13 @@ unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
 
     /* Get the top-level table's MFN */
     top_gfn = cr3 >> PAGE_SHIFT;
-    top_page = get_page_from_gfn_p2m(p2m->domain, p2m, top_gfn,
-                                     &p2mt, NULL, P2M_ALLOC | P2M_UNSHARE);
+    if ( !abort )
+        top_page = get_page_from_gfn_p2m(p2m->domain, p2m, top_gfn,
+                                         &p2mt, NULL, P2M_ALLOC | P2M_UNSHARE);
+    else
+        top_page = try_get_page_from_gfn_p2m(p2m->domain, p2m, top_gfn,
+                                             &p2mt, NULL,
+                                             P2M_ALLOC | P2M_UNSHARE);
     if ( p2m_is_paging(p2mt) )
     {
         ASSERT(!p2m_is_nestedp2m(p2m));
@@ -91,7 +113,12 @@ unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
 #if GUEST_PAGING_LEVELS == 3
     top_map += (cr3 & ~(PAGE_MASK | 31));
 #endif
-    missing = guest_walk_tables(v, p2m, ga, &gw, pfec[0], top_mfn, top_map);
+    if ( !abort )
+        missing = guest_walk_tables(v, p2m, ga, &gw, pfec[0],
+                                        top_mfn, top_map);
+    else
+        missing = try_guest_walk_tables(v, p2m, ga, &gw, pfec[0], top_mfn,
+                                        top_map);
     unmap_domain_page(top_map);
     put_page(top_page);
 
@@ -100,8 +127,13 @@ unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
     {
         gfn_t gfn = guest_l1e_get_gfn(gw.l1e);
         struct page_info *page;
-        page = get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn), &p2mt,
-                                     NULL, P2M_ALLOC | P2M_UNSHARE);
+        if ( !abort )
+            page = get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn), &p2mt,
+                                         NULL, P2M_ALLOC | P2M_UNSHARE);
+        else
+            page = try_get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn),
+                                             &p2mt, NULL,
+                                             P2M_ALLOC | P2M_UNSHARE);
         if ( page )
             put_page(page);
         if ( p2m_is_paging(p2mt) )
@@ -138,6 +170,21 @@ unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
     return INVALID_GFN;
 }
 
+unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
+    struct vcpu *v, struct p2m_domain *p2m, unsigned long cr3,
+    paddr_t ga, uint32_t *pfec, unsigned int *page_order)
+{
+    return __hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(v, p2m, cr3, ga, pfec,
+                                                    page_order, 0);
+}
+
+unsigned long try_hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
+    struct vcpu *v, struct p2m_domain *p2m, unsigned long cr3,
+    paddr_t ga, uint32_t *pfec, unsigned int *page_order)
+{
+    return __hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(v, p2m, cr3, ga, pfec,
+                                                    page_order, 1);
+}
 
 /*
  * Local variables:

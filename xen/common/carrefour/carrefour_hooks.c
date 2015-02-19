@@ -217,35 +217,22 @@ int s_migrate_pages(int domain, unsigned long nr_pages, void ** pages,
    struct domain *d = get_domain_by_id(domain);
 
    for(i = 0; i < nr_pages; i++) {
-      p2m_type_t p2mt;
       unsigned long addr = (unsigned long) pages[i];
       unsigned long gfn = addr >> PAGE_SHIFT;
-      unsigned long mfn = mfn_x(get_gfn(d, gfn, &p2mt));
-      int current_node;
-
-      put_gfn(d, gfn);
       /* int current_node; */
 
-      if ( unlikely(mfn == INVALID_MFN) )
-	  continue;
       /* if(carrefour_options.page_bouncing_fix_4k /\* && (page->stats.nr_migrations >= carrefour_options.page_bouncing_fix_4k) *\/) { */
       /*    //DEBUG_WARNING("Page bouncing fix enable\n"); */
       /* 	 printk("bouncing fix\n"); */
       /*    continue; */
       /* } */
 
-      current_node = phys_to_nid(mfn);
-      if(current_node == nodes[i]) {
-         //DEBUG_WARNING("Current node (%d) = destination node (%d) for page 0x%lx\n", current_node, nodes[i], addr);
-         continue;
-      }
-
       /* if(throttle || !carrefour_options.async_4k_migrations) { */
       /*    unsigned allowed = migration_allowed_4k(); */
 
       /*    if(allowed && memory_move(d, ((unsigned long) pages[i]) >> PAGE_SHIFT, */
       /* 				   nodes[i])) { */
-      err = (memory_move(d, gfn, nodes[i]) == INVALID_MFN);
+      err = (memory_move(d, gfn, nodes[i], 0) == INVALID_MFN);
       /*       //__DEBUG("Migrating page 0x%lx\n", addr); */
 
       /*       // FGAUD */

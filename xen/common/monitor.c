@@ -531,7 +531,7 @@ static void drain_migration_queue(void)
 
         for (j=0; j<(1 << monitor_order); j++)
         {
-            ret = memory_move(query->domain, query->gfn + j, query->node);
+            ret = memory_move(query->domain, query->gfn + j, query->node, 0);
             stats_account_migration_try(ret != INVALID_MFN);
 
             if ( ret != INVALID_MFN )

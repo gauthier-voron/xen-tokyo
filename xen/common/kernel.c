@@ -503,7 +503,7 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         }
 
         node = phys_to_nid(mfn << PAGE_SHIFT);
-        if ( memory_move(d, gfn, node) == INVALID_MFN )
+        if ( memory_move(d, gfn, node, MEMORY_MOVE_FORCE) == INVALID_MFN )
         {
             put_domain(d);
             return -1;

@@ -24,8 +24,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <xen/rbtree.h>
 #include <xen/spinlock.h>
 
-#define MAX_PAGES_TO_WATCH_ACCURATE 3000
-#define MAX_PAGES_TO_WATCH_CHEAP    1000
+#define MAX_PAGES_TO_WATCH_ACCURATE 30000
+#define MAX_PAGES_TO_WATCH_CHEAP    10000
 
 struct sdpage {
    struct rb_node node;

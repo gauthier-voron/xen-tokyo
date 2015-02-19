@@ -27,8 +27,8 @@ extern unsigned long nr_accesses_node[MAX_NUMNODES];
 
 /** rbtree to hold seen pages **/
 struct pagetree ** pages;
-struct pagetree pages_global;
-struct pagetree pages_huge_global;
+struct pagetree *pages_global;
+struct pagetree *pages_huge_global;
 
 unsigned nr_pagetrees;
 
@@ -383,15 +383,15 @@ void get_rbtree(struct pagetree ** tree, struct pagetree ** tree_huge) {
    int i;
 
    //TODO: Support compaction and history
-   _rbtree_init(&pages_huge_global, MAX_PAGES_TO_WATCH_ACCURATE);
-   _rbtree_init(&pages_global, MAX_PAGES_TO_WATCH_ACCURATE);
+   _rbtree_init(pages_huge_global, MAX_PAGES_TO_WATCH_ACCURATE);
+   _rbtree_init(pages_global, MAX_PAGES_TO_WATCH_ACCURATE);
 
    for(i = 0; i < nr_pagetrees; i++) {
-      _merge_trees(pages[i], &pages_global, &pages_huge_global);
+      _merge_trees(pages[i], pages_global, pages_huge_global);
    }
 
-   *tree = &pages_global;
-   *tree_huge = &pages_huge_global;
+   *tree = pages_global;
+   *tree_huge = pages_huge_global;
 }
 
 void rbtree_load_module(void) {
@@ -416,6 +416,9 @@ void rbtree_load_module(void) {
       pages[i] = tree;
       printk("Allocated %lu bytes for core %d\n", sizeof(*tree), i);
    }
+
+   pages_global = kzalloc(sizeof(*pages_global));
+   pages_huge_global = kzalloc(sizeof(*pages_huge_global));
 }
 
 void rbtree_remove_module(void) {
@@ -424,6 +427,8 @@ void rbtree_remove_module(void) {
       vfree(pages[i]);
    }
    kfree(pages);
+   kfree(pages_global);
+   kfree(pages_huge_global);
 }
 
 void rbtree_clean(void) {

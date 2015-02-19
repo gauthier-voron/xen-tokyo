@@ -30,11 +30,6 @@ carrefour_main.c:
 carrefour_rbtree.c:
 - change stats from double to unsigned long (no SSE available)
 
-carrefour_rbtree.h:
-- change MAX_PAGES_TO_WATCH_ACCURATE from 30000 to 3000
-         MAX_PAGES_TO_WATCH_CHEAP from 10000 to 1000
-  because of boot crash
-
 
 carrefour_ibs.c:
 - replace for_each_possible_cpu() by for_each_online_cpu()

@@ -226,6 +226,8 @@ int s_migrate_pages(int domain, unsigned long nr_pages, void ** pages,
       put_gfn(d, gfn);
       /* int current_node; */
 
+      if ( unlikely(mfn == INVALID_MFN) )
+	  continue;
       /* if(carrefour_options.page_bouncing_fix_4k /\* && (page->stats.nr_migrations >= carrefour_options.page_bouncing_fix_4k) *\/) { */
       /*    //DEBUG_WARNING("Page bouncing fix enable\n"); */
       /* 	 printk("bouncing fix\n"); */
@@ -243,7 +245,7 @@ int s_migrate_pages(int domain, unsigned long nr_pages, void ** pages,
 
       /*    if(allowed && memory_move(d, ((unsigned long) pages[i]) >> PAGE_SHIFT, */
       /* 				   nodes[i])) { */
-      err = (memory_move(d, addr >> PAGE_SHIFT, nodes[i]) == INVALID_MFN);
+      err = (memory_move(d, gfn, nodes[i]) == INVALID_MFN);
       /*       //__DEBUG("Migrating page 0x%lx\n", addr); */
 
       /*       // FGAUD */

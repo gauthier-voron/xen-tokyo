@@ -150,7 +150,7 @@ static inline int _mm_read_trylock(mm_rwlock_t *l, int level)
 {
     if ( !__check_lock_level_safe(level) )
 	return 0;
-    return read_trylock(&l->lock);
+    return read_trylock_safe(&l->lock);
 }
 
 static inline void mm_read_unlock(mm_rwlock_t *l)
@@ -164,7 +164,7 @@ static inline void mm_read_unlock(mm_rwlock_t *l)
     { _mm_lock(l, func, __LINE__, rec); }
 #define declare_mm_rwlock(name)                                               \
     static inline void mm_write_lock_##name(mm_rwlock_t *l, const char *func) \
-    { _mm_write_lock(l, func, __LINE__); }                                    \
+    { _mm_write_lock(l, func, __LINE__); }				      \
     static inline void mm_read_lock_##name(mm_rwlock_t *l)                    \
     { _mm_read_lock(l, __LINE__); }					      \
     static inline int mm_read_trylock_##name(mm_rwlock_t *l)                  \
@@ -173,6 +173,7 @@ static inline void mm_read_unlock(mm_rwlock_t *l)
 #define mm_lock(name, l) mm_lock_##name(l, __func__, 0)
 #define mm_lock_recursive(name, l) mm_lock_##name(l, __func__, 1)
 #define mm_write_lock(name, l) mm_write_lock_##name(l, __func__)
+#define mm_write_trylock(name, l) mm_write_trylock_##name(l, __func__)
 #define mm_read_lock(name, l) mm_read_lock_##name(l)
 #define mm_read_trylock(name, l) mm_read_trylock_##name(l)
 
@@ -233,8 +234,8 @@ declare_mm_lock(nestedp2m)
  */
 
 declare_mm_rwlock(p2m);
-#define p2m_lock(p)           mm_write_lock(p2m, &(p)->lock);
-#define p2m_unlock(p)         mm_write_unlock(&(p)->lock);
+#define p2m_lock(p)           mm_write_lock(p2m, &(p)->lock)
+#define p2m_unlock(p)         mm_write_unlock(&(p)->lock)
 #define gfn_lock(p,g,o)       p2m_lock(p)
 #define gfn_unlock(p,g,o)     p2m_unlock(p)
 #define p2m_read_lock(p)      mm_read_lock(p2m, &(p)->lock)

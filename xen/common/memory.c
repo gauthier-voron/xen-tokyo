@@ -1150,11 +1150,13 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
 }
 
 unsigned long memory_move(struct domain *d, unsigned long gfn,
-                          unsigned long node)
+                          unsigned long node, int flags)
 {
     unsigned int memflags;
     struct page_info *old = NULL;
     struct page_info *new = NULL;
+    unsigned long ret = INVALID_MFN;
+    int onode;
 
     ASSERT(node < MAX_NUMNODES);
 
@@ -1175,6 +1177,13 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
     old = __memory_move_steal(d, gfn);                        /* get the gfn */
     if ( unlikely(old == NULL) )                         /* unless it failed */
         goto fail_gfn;
+
+    onode = phys_to_nid(page_to_mfn(old) << PAGE_SHIFT);
+    if ( onode == node && !(flags & MEMORY_MOVE_FORCE) )
+    {
+        ret = page_to_mfn(old);
+        goto fail_old;
+    }
 
     new = alloc_domheap_pages(NULL, 0, memflags);
     if ( unlikely(new == NULL) )

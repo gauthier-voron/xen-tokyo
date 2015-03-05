@@ -400,13 +400,16 @@ void clear_memory_moved_gfn(void);
 /*
  * Move, for a specified domain, the pages with the given gfn to the specified
  * nodes. The move can be done concurrently with other operations.
- * <future>If a node has to be moved on a node it already is, nothing is done
- * for this page.</future>
+ * If a node has to be moved on a node it already is, nothing is done for
+ * this page unless the flag MEMORY_MOVE_FORCE is supplied.
  * Return the newly assocated mfn to the given gfn on success, or INVALID_MFN
  * otherwise.
  */
 unsigned long memory_move(struct domain *d, unsigned long gfn,
-			  unsigned long node);
+			  unsigned long node, int flags);
+
+#define MEMORY_MOVE_FORCE    (1ul << 0)
+
 #endif
 
 #endif /* __XEN_MM_H__ */

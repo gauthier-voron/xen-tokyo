@@ -2,6 +2,7 @@
 #define ASM_X86__IBS_H
 
 
+#include <asm/regs.h>
 #include <xen/types.h>
 
 
@@ -67,9 +68,11 @@
 #define IBS_RECORD_WCMEMACC      (1UL << 13)  /* data cache WC mem access */
 #define IBS_RECORD_DCMISACC      (1UL <<  8)  /* data cache misaligned pnlty */
 #define IBS_RECORD_DCMISS        (1UL <<  7)  /* data cache miss */
-#define IBS_RECORD_TLBHIT1G      (1UL <<  5)  /* data L1 TLB hit 1G */
-#define IBS_RECORD_TLBHIT2M      (1UL <<  4)  /* data L1 TLB hit 2M */
-#define IBS_RECORD_DCTLBMISS     (1UL <<  2)  /* data L1 TLB miss */
+#define IBS_RECORD_L2TLBHIT2M    (1UL <<  6)  /* data L2 TLB hit 2M */
+#define IBS_RECORD_L1TLBHIT1G    (1UL <<  5)  /* data L1 TLB hit 1G */
+#define IBS_RECORD_L1TLBHIT2M    (1UL <<  4)  /* data L1 TLB hit 2M */
+#define IBS_RECORD_DCL2TLBMISS   (1UL <<  3)  /* data L2 TLB miss */
+#define IBS_RECORD_DCL1TLBMISS   (1UL <<  2)  /* data L1 TLB miss */
 #define IBS_RECORD_STOP          (1UL <<  1)  /* store operation */
 #define IBS_RECORD_LDOP          (1UL <<  0)  /* load operation */
 
@@ -100,7 +103,7 @@ struct ibs_record
  * appropriate handler.
  * Return 1 if the NMI was an IBS-related NMI, 0 otherwise.
  */
-int nmi_ibs(void);
+int nmi_ibs(const struct cpu_user_regs *regs);
 
 
 /*
@@ -147,7 +150,8 @@ int ibs_setrate(unsigned long rate);
  * The handler is called in an NMI context.
  * Return 0 in case of success.
  */
-int ibs_sethandler(void (*handler)(struct ibs_record *record));
+int ibs_sethandler(void (*handler)(const struct ibs_record *record,
+				   const struct cpu_user_regs *regs));
 
 
 /*
@@ -158,6 +162,8 @@ int ibs_enable(void);
 
 /*
  * Stop to sample uops.
+ * If wait is true, wait for every running IBS interrupt to end before to
+ * return.
  */
 void ibs_disable(void);
 

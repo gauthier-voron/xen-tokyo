@@ -531,7 +531,7 @@ static void drain_migration_queue(void)
 
         for (j=0; j<(1 << monitor_order); j++)
         {
-            ret = memory_move(query->domain, query->gfn + j, query->node);
+            ret = memory_move(query->domain, query->gfn + j, query->node, 0);
             stats_account_migration_try(ret != INVALID_MFN);
 
             if ( ret != INVALID_MFN )
@@ -677,7 +677,8 @@ static void disable_monitoring_pebs(void)
     /* pebs_release(); */
 }
 
-static void ibs_nmi_handler(struct ibs_record *record)
+static void ibs_nmi_handler(const struct ibs_record *record,
+                            const struct cpu_user_regs *regs)
 {
     unsigned long vaddr, gfn, ogfn, mfn;
     struct migration_query *query;
@@ -922,8 +923,6 @@ err:
 
 void stop_monitoring(void)
 {
-    int cpu;
-
     if ( !monitoring_started )
         return;
 
@@ -935,19 +934,6 @@ void stop_monitoring(void)
         disable_monitoring_pebs();
 
     monitoring_started = 0;
-
-    /*
-     * Ensure no NMI interrupt is occuring before to free the data structures
-     * of monitoring.
-     * No need to really lock because IBS/PEBS is disabled but an interrupt
-     * could start before this function execution, so just wait the locks are
-     * free.
-     */
-
-    for_each_online_cpu ( cpu )
-        while ( cmpxchg(&per_cpu(migration_engine_owner, cpu), OWNER_NONE,
-                        OWNER_NONE) != OWNER_NONE )
-            ;
 
     free_migration_engine();
     free_mcooldown(&migration_cooldown);

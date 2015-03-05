@@ -294,9 +294,9 @@ void __put_gfn(struct p2m_domain *p2m, unsigned long gfn)
 }
 
 /* Atomically look up a GFN and take a reference count on the backing page. */
-struct page_info *get_page_from_gfn_p2m(
+static struct page_info *__get_page_from_gfn_p2m(
     struct domain *d, struct p2m_domain *p2m, unsigned long gfn,
-    p2m_type_t *t, p2m_access_t *a, p2m_query_t q)
+    p2m_type_t *t, p2m_access_t *a, p2m_query_t q, int abort)
 {
     struct page_info *page = NULL;
     p2m_access_t _a;
@@ -310,7 +310,21 @@ struct page_info *get_page_from_gfn_p2m(
     if ( likely(!p2m_locked_by_me(p2m)) )
     {
         /* Fast path: look up and get out */
-        p2m_read_lock(p2m);
+        if ( !abort )
+        {
+            p2m_read_lock(p2m);
+        }
+        else if ( !p2m_read_trylock(p2m) )
+        {
+            /*
+             * Type and access may be tested even if we return NULL.
+             * It can be dangerous is pointers to uninitialized memory.
+             * So give by default value.
+             */
+            *t = p2m_invalid;
+            *a = p2m_access_n;
+            return NULL;
+        }
         mfn = __get_gfn_type_access(p2m, gfn, t, a, 0, NULL, 0);
         if ( p2m_is_any_ram(*t) && mfn_valid(mfn)
              && !((q & P2M_UNSHARE) && p2m_is_shared(*t)) )
@@ -349,6 +363,20 @@ struct page_info *get_page_from_gfn_p2m(
     put_gfn(d, gfn);
 
     return page;
+}
+
+struct page_info *get_page_from_gfn_p2m(
+    struct domain *d, struct p2m_domain *p2m, unsigned long gfn,
+    p2m_type_t *t, p2m_access_t *a, p2m_query_t q)
+{
+    return __get_page_from_gfn_p2m(d, p2m, gfn, t, a, q, 0);
+}
+
+struct page_info *try_get_page_from_gfn_p2m(
+    struct domain *d, struct p2m_domain *p2m, unsigned long gfn,
+    p2m_type_t *t, p2m_access_t *a, p2m_query_t q)
+{
+    return __get_page_from_gfn_p2m(d, p2m, gfn, t, a, q, 1);
 }
 
 /* Returns: 0 for success, -errno for failure */
@@ -1718,20 +1746,26 @@ unsigned long paging_gva_to_gfn(struct vcpu *v,
     return hostmode->gva_to_gfn(v, hostp2m, va, pfec);
 }
 
+extern unsigned long hap_gva_to_gfn_4_levels(struct vcpu *v,
+					  struct p2m_domain *p2m,
+					  unsigned long gva, 
+					  uint32_t *pfec);
+
+extern unsigned long try_hap_gva_to_gfn_4_levels(struct vcpu *v,
+					  struct p2m_domain *p2m,
+					  unsigned long gva, 
+					  uint32_t *pfec);
+
 unsigned long try_paging_gva_to_gfn(struct vcpu *v,
                                     unsigned long va,
                                     uint32_t *pfec)
 {
     struct p2m_domain *hostp2m = p2m_get_hostp2m(v->domain);
-    unsigned long ret;
+    const struct paging_mode *hostmode = paging_get_hostmode(v);
 
-    if ( !p2m_read_trylock(hostp2m) )
-        return INVALID_GFN;
-
-    ret = paging_gva_to_gfn(v, va, pfec);
-    p2m_read_unlock(hostp2m);
-
-    return ret;
+    if ( hostmode->gva_to_gfn == hap_gva_to_gfn_4_levels )
+        return try_hap_gva_to_gfn_4_levels(v, hostp2m, va, pfec);
+    return INVALID_GFN;
 }
 
 /*** Audit ***/

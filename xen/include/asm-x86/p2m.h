@@ -396,6 +396,15 @@ struct page_info *get_page_from_gfn_p2m(struct domain *d,
                                         p2m_type_t *t, p2m_access_t *a,
                                         p2m_query_t q);
 
+/*
+ * Same thing but return NULL if unable to lock the gfn immediately.
+ */
+struct page_info *try_get_page_from_gfn_p2m(struct domain *d,
+                                        struct p2m_domain *p2m,
+                                        unsigned long gfn,
+                                        p2m_type_t *t, p2m_access_t *a,
+                                        p2m_query_t q);
+
 static inline struct page_info *get_page_from_gfn(
     struct domain *d, unsigned long gfn, p2m_type_t *t, p2m_query_t q)
 {

@@ -3309,9 +3309,9 @@ void do_nmi(const struct cpu_user_regs *regs)
 
     ++nmi_count(cpu);
 
-    if ( pebs_capable() && nmi_pebs(cpu) )
+    if ( pebs_capable() && nmi_pebs(regs) )
         return;
-    if ( ibs_capable() && nmi_ibs() )
+    if ( ibs_capable() && nmi_ibs(regs) )
         return;
 
     if ( nmi_callback(regs, cpu) )

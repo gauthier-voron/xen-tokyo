@@ -320,6 +320,14 @@ int _read_trylock(rwlock_t *lock)
     return 1;
 }
 
+int _read_trylock_safe(rwlock_t *lock)
+{
+    if ( !_raw_read_trylock(&lock->raw) )
+        return 0;
+    preempt_disable();
+    return 1;
+}
+
 void _read_unlock(rwlock_t *lock)
 {
     preempt_enable();

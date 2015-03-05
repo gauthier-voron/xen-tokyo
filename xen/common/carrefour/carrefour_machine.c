@@ -146,7 +146,7 @@ static void read_ht_conf_1hop(int from, int to) {
          mlink >>= 8;
       }
    }
-   printk("Linkmask from %d to %d %lx\n", from, to, linkmasks[from][to]);
+   printu("Linkmask from %d to %d %lx\n", from, to, linkmasks[from][to]);
 }
 static struct link linkindexes[IBS_MAX_NB_LINKS];
 static void simplify_linkmasks(void) {

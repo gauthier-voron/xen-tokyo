@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #define __CARREFOUR_MAIN__ 
 
 #define FAKE_IBS           0
+#define CARREFOUR_PRINT    0
 
 #ifdef LEGACY_MADV_REP
 #define MADV_REPLICATE     16
@@ -45,6 +46,12 @@ struct page_to_node {
    int node;
    int status;
 };
+
+#if CARREFOUR_PRINT
+#  define printu(...)  printk(__VA_ARGS__)
+#else
+#  define printu(...)  if ( 0 ) { printk(__VA_ARGS__); }
+#endif
 
 /* #include "console.h" */
 #include <xen/carrefour/carrefour_hooks.h>

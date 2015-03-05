@@ -430,7 +430,7 @@ void decide_pages_fate(void) {
          nr_misplaced_thp++;
       }
    }
-   printk("%d regular huge pages, %d THP -- %d THP shared, %d misplaced -- %d THP split succeded, %d failed -- %d THP migrate succeded, %d failed\n", 
+   printu("%d regular huge pages, %d THP -- %d THP shared, %d misplaced -- %d THP split succeded, %d failed -- %d THP migrate succeded, %d failed\n", 
          nr_regular_huge_pages, nr_thp,
          nr_shared_thp, nr_misplaced_thp,
          nr_thp_split, nr_thp_split_failed,
@@ -497,7 +497,7 @@ void decide_pages_fate(void) {
    }
 
    for(p = hgpages_to_interleave.vcpus; p; p = p->next) {
-      printk("Moving %d huge pages of pid %d!\n", p->nb_pages, p->domain);
+      printu("Moving %d huge pages of pid %d!\n", p->nb_pages, p->domain);
       printk("s_migrate_hugepages(p->domain, p->nb_pages, p->pages, p->nodes);\n");
    }
 
@@ -521,11 +521,11 @@ void decide_pages_fate(void) {
 
    if(run_stats.nb_migration_orders + run_stats.nb_interleave_orders) {
       for(i = 0; i < num_online_nodes(); i++) {
-         printk("Moving pages from node %d: ", i);
+         printu("Moving pages from node %d: ", i);
          for(j = 0; j < num_online_nodes(); j++) {
-            printk("%d\t", run_stats.migr_from_to_node[i][j]);
+            printu("%d\t", run_stats.migr_from_to_node[i][j]);
          }
-         printk("\n");
+         printu("\n");
       }
    }
 
@@ -571,16 +571,16 @@ void decide_pages_fate(void) {
    carrefour_free_pages(&hgpages_to_interleave);
    carrefour_free_pages(&pages_to_replicate);
 
-   printk("Carrefour - %d migration %d interleaving %d replication orders\n",
+   printu("Carrefour - %d migration %d interleaving %d replication orders\n",
          run_stats.nb_migration_orders, run_stats.nb_interleave_orders, run_stats.nb_replication_orders
          );
 
-   printk("%lu pages, %lu samples, avg = %lu\n", 
+   printu("%lu pages, %lu samples, avg = %lu\n", 
          rbtree_stats.nr_pages_in_tree, rbtree_stats.total_samples_in_tree,
          (unsigned long) run_stats.avg_nr_samples_per_page);
 
    if(carrefour_module_options[DETAILED_STATS].value) {
-      printk("NPPT = %lu -- NSAAO = %lu -- TNO = %lu -- TNSIT = %lu -- TNSM = %lu\n", 
+      printu("NPPT = %lu -- NSAAO = %lu -- TNO = %lu -- TNSIT = %lu -- TNSM = %lu\n", 
             run_stats.nr_of_process_pages_touched, run_stats.nr_of_samples_after_order, global_stats.total_nr_orders, rbtree_stats.total_samples_in_tree, rbtree_stats.total_samples_missed);
    }
 }

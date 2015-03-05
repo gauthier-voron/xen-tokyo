@@ -414,11 +414,13 @@ void rbtree_load_module(void) {
       }
 
       pages[i] = tree;
-      printk("Allocated %lu bytes for core %d\n", sizeof(*tree), i);
+      printu("Allocated %lu bytes for core %d\n", sizeof(*tree), i);
    }
 
    pages_global = kzalloc(sizeof(*pages_global));
    pages_huge_global = kzalloc(sizeof(*pages_huge_global));
+   printu("Allocated %lu bytes for global structures\n",
+	  sizeof(*pages_global) + sizeof(*pages_huge_global));
 }
 
 void rbtree_remove_module(void) {

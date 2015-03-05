@@ -164,8 +164,6 @@ int start_profiling(void) {
 
    carrefour_ibs_start();
 
-   printk("reset_carrefour_stats();\n");
-
    return 0;
 } 
 
@@ -186,7 +184,7 @@ int stop_profiling(void) {
       enable_carrefour = 0;
    }
 
-   printk("-- Carrefour %s, replication %s, interleaving %s, migration %s, frequency %s\n", 
+   printu("-- Carrefour %s, replication %s, interleaving %s, migration %s, frequency %s\n", 
             enable_carrefour    ? "enabled" : "disabled",
             enable_replication  ? "enabled" : "disabled",
             enable_interleaving ? "enabled" : "disabled",
@@ -219,7 +217,7 @@ int stop_profiling(void) {
       unsigned long total_time = time_after_stop_profiling - time_start_profiling;
       unsigned long stop_profiling_time = time_after_stop_profiling - time_before_stop_profiling;
 
-      printk("-- Carrefour %lu total profiling time, %lu stop_profiling, %lu in NMI - Overhead master core %d%%, average overhead %d%%\n",
+      printu("-- Carrefour %lu total profiling time, %lu stop_profiling, %lu in NMI - Overhead master core %d%%, average overhead %d%%\n",
             (unsigned long) total_time,
             (unsigned long) stop_profiling_time,
             (unsigned long) run_stats.time_spent_in_NMI,
@@ -227,14 +225,14 @@ int stop_profiling(void) {
             (int)((run_stats.time_spent_in_NMI / num_online_cpus()) * 100 / total_time)
             );
 
-      printk("-- Carrefour %lu total migration time, migration overhead (%d%%)\n",
+      printu("-- Carrefour %lu total migration time, migration overhead (%d%%)\n",
             (unsigned long) run_stats.time_spent_in_migration,
             (int) (run_stats.time_spent_in_migration * 100 / (time_after_stop_profiling - time_start_profiling))
             );
 
    }
 
-   printk("Current core is %d\n", smp_processor_id());
+   printu("Current core is %d\n", smp_processor_id());
 
    return 0;
 }

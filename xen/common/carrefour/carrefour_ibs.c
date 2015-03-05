@@ -157,8 +157,8 @@ int carrefour_ibs_stop() {
 	   total_samples_L3DRAM += per_cpu(stats, cpu).total_samples_L3DRAM;
 	   run_stats.time_spent_in_NMI += per_cpu(stats, cpu).time_spent_in_NMI;
    }
-   printk("Sampling: %lx op=%d considering L1&L2=%d\n", sampling_rate, carrefour_module_options[IBS_INSTRUCTION_BASED].value, carrefour_module_options[IBS_CONSIDER_CACHES].value);
-   printk("Total interrupts %d Total Samples %d\n", total_interrupts, total_samples);
+   printu("Sampling: %lx op=%d considering L1&L2=%d\n", sampling_rate, carrefour_module_options[IBS_INSTRUCTION_BASED].value, carrefour_module_options[IBS_CONSIDER_CACHES].value);
+   printu("Total interrupts %d Total Samples %d\n", total_interrupts, total_samples);
 
    return total_samples_L3DRAM;
 }

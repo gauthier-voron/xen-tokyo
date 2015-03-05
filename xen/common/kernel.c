@@ -4,6 +4,7 @@
  * Copyright (c) 2002-2005 K A Fraser
  */
 
+#include <asm/ubench.h>
 #include <xen/carrefour/xen_carrefour.h>
 #include <xen/config.h>
 #include <xen/init.h>
@@ -251,6 +252,12 @@ void __init do_initcalls(void)
 #  define HYPERCALL_BIGOS_CFR_EXIT      -13
 #  define HYPERCALL_BIGOS_CFR_WRITE     -14
 #endif
+
+#define HYPERCALL_BIGOS_UBENCH_PREPARE  -15
+#define HYPERCALL_BIGOS_UBENCH_AFFECT   -16
+#define HYPERCALL_BIGOS_UBENCH_RUN      -17
+#define HYPERCALL_BIGOS_UBENCH_FINALIZE -18
+
 
 #ifdef BIGOS_DIRECT_MSR
 #  ifndef COMPAT
@@ -686,6 +693,69 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return -1;
     }
 #endif /* ifdef BIGOS_CARREFOUR */
+    case HYPERCALL_BIGOS_UBENCH_PREPARE:
+    {
+        unsigned long arr[3], node, size, time;
+        unsigned long bd;
+
+        if ( !copy_from_guest(&arr[0], arg, 3) )
+        {
+            node = arr[0];
+            size = arr[1];
+            time = arr[2];
+        }
+        else
+        {
+            return -1;
+        }
+
+        bd = prepare_ubench(node, size, time);
+
+        return bd;
+    }
+
+    case HYPERCALL_BIGOS_UBENCH_AFFECT:
+    {
+        unsigned long arr[2], bd, core;
+
+        if ( !copy_from_guest(&arr[0], arg, 2) )
+        {
+            bd = arr[0];
+            core = arr[1];
+        }
+        else
+        {
+            return -1;
+        }
+
+        affect_ubench(bd, core);
+
+        return 0;
+    }
+
+    case HYPERCALL_BIGOS_UBENCH_RUN:
+    {
+        unsigned long bd;
+
+        if ( copy_from_guest(&bd, arg, 1) )
+            return -1;
+
+        run_ubench(bd);
+
+        return 0;
+    }
+
+    case HYPERCALL_BIGOS_UBENCH_FINALIZE:
+    {
+        unsigned long bd;
+
+        if ( copy_from_guest(&bd, arg, 1) )
+            return -1;
+
+        finalize_ubench(bd);
+
+        return 0;
+    }
 
     case XENVER_version:
     {

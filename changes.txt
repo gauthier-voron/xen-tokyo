@@ -37,9 +37,3 @@ carrefour_ibs.c:
   - change kernel_mode by hypervisor_mode
   - change tgid by domain_id
   - change pid by vcpu_id
-
-
-carrefour_hooks.c:
-- needs to obtain mfn by gfn (walking the page table of the host)
-  - weird fact: the performances seems to be smaller when doing that whereas it
-    should avoid a lot of false migration...

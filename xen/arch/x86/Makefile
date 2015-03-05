@@ -61,6 +61,8 @@ obj-y += hpet.o
 obj-y += xstate.o
 obj-y += pebs.o
 obj-y += ibs.o
+obj-y += ubench.o
+obj-y += ubenchseq.o
 
 obj-$(crash_debug) += gdbstub.o
 

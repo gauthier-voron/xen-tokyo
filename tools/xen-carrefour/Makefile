@@ -9,10 +9,7 @@ CFLAGS += -DNB_NODES=${NB_NODES}
 
 all: xen-carrefour
 
-xen-carrefour: carrefour-kthp
-	ln -s $< $@
-
-carrefour-kthp: carrefour-kthp.c hypercall.c perfctr.c xencarrefour.c carrefour.h xc_private.h xencarrefour.h
+xen-carrefour: xen-carrefour.c hypercall.c perfctr.c xencarrefour.c carrefour.h xc_private.h xencarrefour.h
 
 clean:
-	rm -f xen-carrefour carrefour-kthp *.o
+	rm -f xen-carrefour *.o

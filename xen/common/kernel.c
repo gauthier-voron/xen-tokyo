@@ -234,6 +234,9 @@ void __init do_initcalls(void)
 #  define HYPERCALL_BIGOS_PTSTAT        -4
 #  define HYPERCALL_BIGOS_PTSELFMOVE    -5
 #  define HYPERCALL_BIGOS_FLUSHTLB      -6
+#  define HYPERCALL_BIGOS_ALLOCGRAIN   -19
+
+extern unsigned int domain_allocation_max_order;
 #endif
 
 #ifdef BIGOS_PERF_COUNTING
@@ -394,16 +397,10 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 #endif
 
 #ifdef BIGOS_MEMORY_MOVE
-    /*
-     * Special case for manual triggering
-     * Should not be in any definitive version
-     * The dom0 counterpart is in tools/trigger/
-     * TODO: remove as soon as possible
-     */
     case HYPERCALL_BIGOS_PTSTAT:
     {
         unsigned long i, tot, node, sum4k, sum2m, sum1g;
-        unsigned long last_gfn, last_node, last_order;
+        unsigned long last_gfn, last_order, last_node, last_range, max_range;
         unsigned long domid;
         unsigned int order;
         struct domain *d;
@@ -432,18 +429,32 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         p2m = p2m_get_hostp2m(d);
 
         last_gfn = 0;
+        last_range = 0;
         last_node = ~0ul;
         last_order = ~0ul;
+        max_range = 0;
+        node = ~0ul;
 
         sum4k = sum2m = sum1g = 0;
 
-        printk("%-10s %-10s %-5s %-5s\n", "from", "to", "node", "order");
+        printk("%-10s %-10s %-9s %-5s\n", "from", "to", "max range", "order");
         for (i=0; i<tot; i++)
         {
             mfn = mfn_x(p2m->get_entry(p2m, i, &t, &a, 0, &order));
+            
+            if ( mfn != INVALID_MFN )
+                node = phys_to_nid(mfn << PAGE_SHIFT);
+
+            if ( mfn == INVALID_MFN || node != last_node )
+            {
+                if ( i - last_range > max_range )
+                    max_range = i - last_range;
+                last_range = i;
+                last_node = node;
+            }
+
             if ( mfn == INVALID_MFN )
                 continue;
-            node = phys_to_nid(mfn << PAGE_SHIFT);
 
             if ( order == PAGE_ORDER_4K )
                 sum4k++;
@@ -452,13 +463,13 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             else if ( order == PAGE_ORDER_1G )
                 sum1g++;
 
-            if ( unlikely(node != last_node || order != last_order) )
+            if ( unlikely(order != last_order) )
             {
-                if ( likely(last_node != ~0ul || last_order != ~0ul) )
-                    printk("0x%-8lx 0x%-8lx %-5lu %-5lu\n",
-                           last_gfn, i-1, last_node, last_order);
+                if ( likely(last_order != ~0ul) )
+                    printk("0x%-8lx 0x%-8lx 0x%-7lx %-5lu\n",
+                           last_gfn, i-1, max_range, last_order);
                 last_gfn = i;
-                last_node = node;
+                max_range = 0;
                 last_order = order;
             }
         }
@@ -523,6 +534,18 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case HYPERCALL_BIGOS_FLUSHTLB:
     {
         flush_tlb_all();
+        return 0;
+    }
+
+    case HYPERCALL_BIGOS_ALLOCGRAIN:
+    {
+        unsigned long grain;
+
+        if ( copy_from_guest(&grain, arg, 1) )
+            return -1;
+
+        domain_allocation_max_order = (int) grain;
+
         return 0;
     }
 #endif /* BIGOS_MEMORY_MOVE */

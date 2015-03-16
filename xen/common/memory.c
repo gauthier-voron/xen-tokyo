@@ -92,6 +92,11 @@ static void increase_reservation(struct memop_args *a)
     a->nr_done = i;
 }
 
+
+#ifdef BIGOS_MEMORY_MOVE
+int domain_allocation_max_order = PAGE_ORDER_1G;
+#endif
+
 static void populate_physmap(struct memop_args *a)
 {
     struct page_info *page;
@@ -146,6 +151,10 @@ static void populate_physmap(struct memop_args *a)
                 }
                 put_page(page);
             }
+#ifdef BIGOS_MEMORY_MOVE
+            else if ( a->extent_order > domain_allocation_max_order )
+                goto out;
+#endif
             else
                 page = alloc_domheap_pages(d, a->extent_order, a->memflags);
 

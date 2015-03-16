@@ -249,6 +249,10 @@ int carrefour_init_module(void) {
    int err;
    struct carrefour_options_t options;
 
+   if ( loaded )
+       return -1;
+   loaded = 1;
+
    memset(&global_stats, 0, sizeof(struct carrefour_global_stats));
 
    printk("max_lin_address = %lx\n", max_lin_address);
@@ -294,6 +298,10 @@ int carrefour_init_module(void) {
 }
 
 void carrefour_exit_module(void) {
+   if ( !loaded )
+      return;
+   loaded = 0;
+
    carrefour_ibs_exit();
 
    rbtree_remove_module();

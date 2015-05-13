@@ -399,10 +399,13 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 #ifdef BIGOS_MEMORY_MOVE
     case HYPERCALL_BIGOS_PTSTAT:
     {
-        unsigned long i, tot, node, sum4k, sum2m, sum1g;
-        unsigned long last_gfn, last_order, last_node, last_range, max_range;
+        unsigned long i, j, tot, node, sum4k, sum2m, sum1g;
+        unsigned long prev, last, start, count;
+        unsigned long pattern[MAX_NUMNODES];
+        unsigned long suspect[MAX_NUMNODES];
+        unsigned long lensuspect, lenpattern, equality;
         unsigned long domid;
-        unsigned int order;
+        unsigned int order = 0;
         struct domain *d;
         struct p2m_domain *p2m;
         p2m_type_t t;
@@ -428,33 +431,28 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         tot = d->tot_pages;
         p2m = p2m_get_hostp2m(d);
 
-        last_gfn = 0;
-        last_range = 0;
-        last_node = ~0ul;
-        last_order = ~0ul;
-        max_range = 0;
-        node = ~0ul;
+        prev = ~0ul;
+        last = ~0ul;
+        start = 0;
+        count = 0;
+
+        for (j=0; j<MAX_NUMNODES; j++)
+        {
+            pattern[j] = ~0ul;
+            suspect[j] = ~0ul;
+        }
+        lensuspect = 0;
+        lenpattern = 0;
 
         sum4k = sum2m = sum1g = 0;
 
-        printk("%-10s %-10s %-9s %-5s\n", "from", "to", "max range", "order");
-        for (i=0; i<tot; i++)
+        printk("%-10s %-10s %-5s  %s\n", "from", "to", "order", "pattern");
+        for (i = 0; i < tot; i += (1 << order))
         {
             mfn = mfn_x(p2m->get_entry(p2m, i, &t, &a, 0, &order));
-            
-            if ( mfn != INVALID_MFN )
-                node = phys_to_nid(mfn << PAGE_SHIFT);
-
-            if ( mfn == INVALID_MFN || node != last_node )
-            {
-                if ( i - last_range > max_range )
-                    max_range = i - last_range;
-                last_range = i;
-                last_node = node;
-            }
-
             if ( mfn == INVALID_MFN )
                 continue;
+            node = phys_to_nid(mfn << PAGE_SHIFT);
 
             if ( order == PAGE_ORDER_4K )
                 sum4k++;
@@ -463,15 +461,134 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             else if ( order == PAGE_ORDER_1G )
                 sum1g++;
 
-            if ( unlikely(order != last_order) )
+            if ( order != last)
             {
-                if ( likely(last_order != ~0ul) )
-                    printk("0x%-8lx 0x%-8lx 0x%-7lx %-5lu\n",
-                           last_gfn, i-1, max_range, last_order);
-                last_gfn = i;
-                max_range = 0;
-                last_order = order;
+                if ( last != ~0ul )
+                {
+                    equality = 1;
+                    for (j=0; j<MAX_NUMNODES; j++)
+                    {
+                        if ( suspect[j] != pattern[j] )
+                            equality = 0;
+                        if ( suspect[j] == ~0ul && pattern[j] == ~0ul )
+                            break;
+                    }
+
+                    if ( equality )
+                    {
+                        for (j=0; j<lensuspect; j++)
+                            suspect[j] = ~0ul;
+                        lensuspect = 0;
+                        count++;
+                    }
+
+                    if ( lenpattern > 0 )
+                    {
+                        printk("%-10lx %-10lx %-5lu ", start,
+                               i - 1 - (lensuspect << last), last);
+                        for (j=0; j<lenpattern; j++)
+                            printk(" %lu", pattern[j]);
+                        printk(" (%lux)\n", count);
+                    }
+
+                    if ( lensuspect > 0 )
+                    {
+                        printk("%-10lx %-10lx %-5lu ",
+                               i - (lensuspect << last), i - 1, last);
+                        for (j=0; j<lensuspect; j++)
+                            printk(" %lu", suspect[j]);
+                        printk(" (1x)\n");
+                    }
+
+                    for (j=0; j<MAX_NUMNODES; j++)
+                    {
+                        suspect[j] = ~0ul;
+                        pattern[j] = ~0ul;
+                    }
+                    lenpattern = 0;
+                    lensuspect = 0;
+                    count = 0;
+
+                    start = i;
+                }
+                last = order;
             }
+
+            if ( node <= prev )
+            {
+                equality = 1;
+                for (j=0; j<MAX_NUMNODES; j++)
+                {
+                    if ( suspect[j] != pattern[j] )
+                        equality = 0;
+                    if ( suspect[j] == ~0ul && pattern[j] == ~0ul )
+                        break;
+                }
+
+                if ( !equality )
+                {
+                    if ( lenpattern > 0 )
+                    {
+                        printk("%-10lx %-10lx %-5lu ", start,
+                               i - 1 - (lensuspect << order), last);
+                        for (j=0; j<lenpattern; j++)
+                            printk(" %lu", pattern[j]);
+                        printk(" (%lux)\n", count);
+
+                        start = i - lensuspect;
+                    }
+                    for (j=0; j<MAX_NUMNODES; j++)
+                        pattern[j] = suspect[j];
+                    lenpattern = lensuspect;
+                    count = 1;
+                }
+                else
+                {
+                    count++;
+                }
+
+                for (j=0; j<lensuspect; j++)
+                    suspect[j] = ~0ul;
+                lensuspect = 0;
+            }
+
+            suspect[lensuspect++] = node;
+            prev = node;
+        }
+
+        equality = 1;
+        for (j=0; j<MAX_NUMNODES; j++)
+        {
+            if ( suspect[j] != pattern[j] )
+                equality = 0;
+            if ( suspect[j] == ~0ul && pattern[j] == ~0ul )
+                break;
+        }
+
+        if ( equality )
+        {
+            for (j=0; j<lensuspect; j++)
+                suspect[j] = ~0ul;
+            lensuspect = 0;
+            count++;
+        }
+
+        if ( lenpattern > 0 )
+        {
+            printk("%-10lx %-10lx %-5lu ", start,
+                   i - 1 - (lensuspect << last), last);
+            for (j=0; j<lenpattern; j++)
+                printk(" %lu", pattern[j]);
+            printk(" (%lux)\n", count);
+        }
+
+        if ( lensuspect > 0 )
+        {
+            printk("%-10lx %-10lx %-5lu ", i - (lensuspect << last), i - 1,
+                   last);
+            for (j=0; j<lensuspect; j++)
+                printk(" %lu", suspect[j]);
+            printk(" (1x)\n");
         }
 
         put_domain(d);

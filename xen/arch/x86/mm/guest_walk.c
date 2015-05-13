@@ -380,7 +380,9 @@ set_ad:
      * success.  Although the PRMs say higher-level _PAGE_ACCESSED bits
      * get set whenever a lower-level PT is used, at least some hardware
      * walkers behave this way. */
-    if ( rc == 0 ) 
+    /* Do not dirty anything in abort mode because we are in NMI context and
+     * cannot block on a spinlock */
+    if ( rc == 0 && !abort )
     {
 #if GUEST_PAGING_LEVELS == 4 /* 64-bit only... */
         if ( set_ad_bits(l4p + guest_l4_table_offset(va), &gw->l4e, 0) )

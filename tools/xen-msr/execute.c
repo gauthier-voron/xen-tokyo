@@ -41,8 +41,9 @@ void execute(const struct command *cmds, unsigned long cmdc,
 		       (current - start) % 1000);
 		for (i=0; i<cmdc; i++) {
 			if (next[i] > current || next[i] < start) {
-				for (j=0; j<corec; j++)
-					printf("- ");
+				if (cmds[i].fields & FIELD_PRINT)
+					for (j=0; j<corec; j++)
+						printf("- ");
 				continue;
 			}
 

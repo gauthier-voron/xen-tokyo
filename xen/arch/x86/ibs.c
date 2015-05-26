@@ -19,14 +19,12 @@ static int ibs_acquired = 0;
 
 static int ibs_enabled = 0;
 
-static DEFINE_PER_CPU(int, handler_state);
-#define HANDLER_RUNNING         0
-#define HANDLER_STOPPING        1
-#define HANDLER_STOPPED         2
-
 static void (*ibs_handler)(const struct ibs_record *record,
 			   const struct cpu_user_regs *regs) = NULL;
 
+
+static DEFINE_PER_CPU(atomic_t, ibs_disabling);
+static DEFINE_PER_CPU(atomic_t, ibs_disabled);
 
 int nmi_ibs(const struct cpu_user_regs *regs)
 {
@@ -37,8 +35,8 @@ int nmi_ibs(const struct cpu_user_regs *regs)
     rdmsr_safe(MSR_AMD64_IBSFETCHCTL, val);
     if ( val & IBS_FETCH_VAL )
     {
-	if ( val & IBS_FETCH_ENABLE && ibs_handler )
-	{
+        if ( val & IBS_FETCH_ENABLE && ibs_handler )
+        {
             record.record_mode = IBS_RECORD_MODE_FETCH
                 | IBS_RECORD_MODE_ILA;
 
@@ -49,11 +47,11 @@ int nmi_ibs(const struct cpu_user_regs *regs)
             {
                 record.record_mode |= IBS_RECORD_MODE_IPA;
                 rdmsr_safe(MSR_AMD64_IBSFETCHPHYSAD,
-			   record.inst_physical_address);
+                           record.inst_physical_address);
             }
 
-	    ibs_handler(&record, regs);
-	}
+            ibs_handler(&record, regs);
+        }
 
         val &= ~(IBS_FETCH_VAL | IBS_FETCH_CNT);
         wrmsr_safe(MSR_AMD64_IBSFETCHCTL, val);
@@ -63,8 +61,8 @@ int nmi_ibs(const struct cpu_user_regs *regs)
     rdmsr_safe(MSR_AMD64_IBSOPCTL, val);
     if ( val & IBS_OP_VAL )
     {
-	if ( val & IBS_OP_ENABLE && ibs_handler )
-	{
+        if ( val & IBS_OP_ENABLE && ibs_handler )
+        {
             record.record_mode = IBS_RECORD_MODE_OP;
 
             rdmsr_safe(MSR_AMD64_IBSOPDATA, record.branch_infos);
@@ -87,28 +85,29 @@ int nmi_ibs(const struct cpu_user_regs *regs)
             {
                 record.record_mode |= IBS_RECORD_MODE_DPA;
                 rdmsr_safe(MSR_AMD64_IBSDCPHYSAD,
-			   record.data_physical_address);
+                           record.data_physical_address);
             }
 
-	    ibs_handler(&record, regs);
-	}
+            ibs_handler(&record, regs);
+        }
 
         val &= ~(IBS_OP_VAL | IBS_OP_CNT);
         wrmsr_safe(MSR_AMD64_IBSOPCTL, val);
         ret = 1;
     }
 
-    /* See ibs_disable() for an explanation about that. */
-    if ( cmpxchg(&this_cpu(handler_state), HANDLER_STOPPING, HANDLER_STOPPED)
-	 == HANDLER_STOPPING )
-    {
-	rdmsr_safe(MSR_AMD64_IBSFETCHCTL, val);
-        val &= ~IBS_FETCH_ENABLE;
-	wrmsr_safe(MSR_AMD64_IBSFETCHCTL, val);
+    /*
+     * Delayed disabling.
+     * See ibs_disable() for an explanation about that.
+     */
 
-	rdmsr_safe(MSR_AMD64_IBSOPCTL, val);
-        val &= ~IBS_OP_ENABLE;
-	wrmsr_safe(MSR_AMD64_IBSOPCTL, val);
+    if (atomic_read(&this_cpu(ibs_disabling))) {
+
+        wrmsr_safe(MSR_AMD64_IBSFETCHCTL, 0);
+        wrmsr_safe(MSR_AMD64_IBSOPCTL, 0);
+
+        atomic_set(&this_cpu(ibs_disabled), 1);
+
     }
 
     return ret;
@@ -162,16 +161,25 @@ int ibs_enable(void)
     spin_lock(&ibs_lock);
 
     if ( !ibs_acquired )
-	goto out;
+	    goto out;
     err = xenoprof_arch_start();
     if ( err )
-	goto out;
+	    goto out;
     ibs_enabled = 1;
 
     err = 0;
  out:
     spin_unlock(&ibs_lock);
     return err;
+}
+
+
+static void __ibs_force_nmi(void *unused)
+{
+    wrmsr_safe(MSR_AMD64_IBSFETCHCTL, IBS_FETCH_ENABLE | 0x1000);
+    wrmsr_safe(MSR_AMD64_IBSOPCTL, IBS_OP_ENABLE | IBS_OP_SET_MAX_CNT(0x1000));
+
+    atomic_set(&this_cpu(ibs_disabling), 1);
 }
 
 static void __ibs_disable(void)
@@ -186,25 +194,27 @@ static void __ibs_disable(void)
      * The xenoprof stop code does not handle race conditions very well with
      * already running IBS interrupt.
      * So the strategy to deal with it is the following:
-     * - for each cpu, set a flag indicating the next NMI is the last one
-     * - in the NMI, when seeing the flag, disable its own cpu inetrrupt and
-     *   update the flags
+     * - for each cpu, increase the sampling rate (a lot) and set a flag
+     *   indicating the next NMI is the last one
+     * - in the NMI, when seeing the flag, disable its own cpu interrupt and
+     *   set another flag to indicate it
      * - in this function, wait for all flags being updated
      * - then call the xenoprof whatever broken code
      */
 
-    for_each_online_cpu ( cpu )
-	(void) cmpxchg(&per_cpu(handler_state, cpu), HANDLER_RUNNING,
-		       HANDLER_STOPPING);
+	on_each_cpu(__ibs_force_nmi, NULL, 1);
 
     for_each_online_cpu ( cpu )
-	while ( per_cpu(handler_state, cpu) != HANDLER_STOPPED )
-	    cpu_relax();
+        while (!atomic_read(&per_cpu(ibs_disabled, cpu)))
+            cpu_relax();
+
+    for_each_online_cpu ( cpu ) {
+        atomic_set(&per_cpu(ibs_disabling, cpu), 0);
+        atomic_set(&per_cpu(ibs_disabled, cpu), 0);
+    }
 
     xenoprof_arch_stop();
 
-    for_each_online_cpu ( cpu )
-	per_cpu(handler_state, cpu) = HANDLER_RUNNING;
 }
 
 void ibs_disable(void)
@@ -221,12 +231,12 @@ int ibs_acquire(void)
     spin_lock(&ibs_lock);
 
     if ( !ibs_capable() )
-	goto out;
+        goto out;
     if ( ibs_acquired )
-	goto out;
+        goto out;
     err = xenoprof_arch_reserve_counters();
     if ( err )
-	goto out;
+        goto out;
     ibs_acquired = 1;
 
     err = 0;
@@ -240,7 +250,7 @@ void ibs_release(void)
     spin_lock(&ibs_lock);
 
     if ( !ibs_acquired )
-	goto out;
+	    goto out;
     if ( ibs_enabled )
         __ibs_disable();
 
@@ -252,3 +262,14 @@ void ibs_release(void)
  out:
     spin_unlock(&ibs_lock);
 }
+
+
+/*
+ * Local variables:
+ * mode: C
+ * c-file-style: "BSD"
+ * c-basic-offset: 4
+ * tab-width: 4
+ * indent-tabs-mode: nil
+ * End:
+ */

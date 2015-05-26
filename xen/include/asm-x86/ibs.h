@@ -27,8 +27,18 @@
 #define IBS_OP_CNT_CTL                  (1ULL<<19)
 #define IBS_OP_VAL                      (1ULL<<18)
 #define IBS_OP_ENABLE                   (1ULL<<17)
-#define IBS_OP_CNT                      0x7FFFFFF00000000ULL
-#define IBS_OP_MAX_CNT                  0x0000FFFFULL
+
+#define IBS_OP_MAX_CNT                  (0x7f0fffful)
+#define IBS_OP_GET_MAX_CNT(val)				\
+	(((val & (0xfffful)) << 4) | (val & 0x7f00000))
+#define IBS_OP_SET_MAX_CNT(val)				\
+	(((val & 0xffff0) >> 4) | (val & 0x7f00000))
+
+#define IBS_OP_CNT                      (0x7ffffff00000000ul)
+#define IBS_OP_GET_CNT(val)			\
+	((val >> 32) & 0x7ffffff)
+#define IBS_OP_SET_CNT(val)			\
+	((val & (0x7fffffful)) << 32)
 
 
 #define IBS_EVENT_FETCH          (1UL <<  0)  /* sample fetch events */

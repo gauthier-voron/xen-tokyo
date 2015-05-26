@@ -86,7 +86,7 @@
 #ifdef NDEBUG
 static char __read_mostly opt_nmi[10] = "dom0";
 #else
-static char __read_mostly opt_nmi[10] = "fatal";
+static char __read_mostly opt_nmi[10] = "ignore";
 #endif
 string_param("nmi", opt_nmi);
 

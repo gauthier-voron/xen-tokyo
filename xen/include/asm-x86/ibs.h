@@ -21,8 +21,18 @@
 #define IBS_FETCH_RAND_EN               (1ULL<<57)
 #define IBS_FETCH_VAL                   (1ULL<<49)
 #define IBS_FETCH_ENABLE                (1ULL<<48)
-#define IBS_FETCH_CNT                   0xFFFF0000ULL
-#define IBS_FETCH_MAX_CNT               0x0000FFFFULL
+
+#define IBS_FETCH_MAX_CNT               (0x0000fffful)
+#define IBS_FETCH_GET_MAX_CNT(val)		\
+	((val & (0xfffful)) << 4)
+#define IBS_FETCH_SET_MAX_CNT(val)		\
+	((val & (0xffff0ul)) >> 4)
+
+#define IBS_FETCH_CNT                   (0xffff0000ul)
+#define IBS_FETCH_GET_CNT(val)			\
+	((val & (0xffff0000ul)) >> 12)
+#define IBS_FETCH_SET_CNT(val)			\
+	((val & (0xffff0ul)) << 12)
 
 #define IBS_OP_CNT_CTL                  (1ULL<<19)
 #define IBS_OP_VAL                      (1ULL<<18)
@@ -145,6 +155,11 @@ void ibs_release(void);
  */
 int ibs_setevent(unsigned long event);
 
+
+#define IBS_RATE_RAW       (1)
+#define IBS_RATE_IPS       (2)
+#define IBS_RATE_TYPE      (IBS_RATE_RAW | IBS_RATE_IPS)
+
 /*
  * Set the sampling rate.
  * The sampling rate is the count of uops to be fetched/retired before the
@@ -153,7 +168,7 @@ int ibs_setevent(unsigned long event);
  * Be carefull, a low rate can freeze the machine in infinite NMI.
  * Return 0 in case of success.
  */
-int ibs_setrate(unsigned long rate);
+int ibs_setrate(unsigned long rate, int flags);
 
 /*
  * Set the handler to be called at ech sampling.

@@ -53,6 +53,7 @@ struct carrefour_run_stats {
    u64 time_start_profiling;
    u64 time_spent_in_migration;
    u64 time_spent_in_NMI;
+   u64 time_spent_in_profiling;
 };
 
 extern struct carrefour_run_stats run_stats;

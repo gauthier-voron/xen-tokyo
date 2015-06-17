@@ -20,6 +20,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 #include <asm/ibs.h>
 #include <asm/paging.h>
 #include <asm/msr.h>
+#include <xen/carrefour/carrefour_hooks.h>
 #include <xen/carrefour/carrefour_main.h>
 #include <xen/percpu.h>
 #include <xen/sched.h>
@@ -30,11 +31,11 @@ unsigned long max_lin_address = (unsigned long) (-1);
 unsigned long sampling_rate;
 
 struct ibs_stats {
-   uint64_t total_interrupts;
-   uint64_t total_samples;
-   uint64_t total_samples_L3DRAM;
-   uint64_t total_sample_overflow;
-   uint64_t time_spent_in_NMI;
+    uint64_t total_interrupts;
+    uint64_t total_samples;
+    uint64_t total_samples_L3DRAM;
+    uint64_t total_sample_overflow;
+    uint64_t time_spent_in_NMI;
 };
 static DEFINE_PER_CPU(struct ibs_stats, stats);
 
@@ -57,48 +58,48 @@ static unsigned long find_gfn_for_vaddr(unsigned long vaddr)
 // This function creates a struct ibs_op_sample struct that contains all IBS info
 // This structure is passed to rbtree_add_sample which stores pages info in a rbreee.
 static void handle_ibs_nmi(const struct ibs_record *record,
-			   const struct cpu_user_regs *regs) {
-   int cpu = smp_processor_id();
-   unsigned long gfn;
-   uint64_t time_start,time_stop;
+                           const struct cpu_user_regs *regs)
+{
+    unsigned long gfn;
+    uint64_t time_start, time_stop;
 
-   rdtscll(time_start);
+    time_start = NOW();
 
-   per_cpu(stats, cpu).total_interrupts++;
+    this_cpu(stats).total_interrupts++;
 
-   if ( current->domain->guest_type != guest_type_hvm )
-       goto end;
+    if ( current->domain->guest_type != guest_type_hvm )
+        goto end;
 
-   // If the sample does not touch DRAM, stop.
-   if((!carrefour_module_options[IBS_CONSIDER_CACHES].value)
-      && ((record->northbridge_infos & 7) == 0))
-       goto end;
-   
-   if((record->northbridge_infos & 7) == 3) 
-       per_cpu(stats, cpu).total_samples_L3DRAM++;
 
-   gfn = find_gfn_for_vaddr(record->data_linear_address);
-   if (gfn == INVALID_GFN)
-       goto end;
-   ((struct ibs_record *) record)->data_linear_address = gfn << PAGE_SHIFT;
+    if ( !carrefour_module_options[IBS_CONSIDER_CACHES].value
+         && (record->northbridge_infos & 7) == 0 )
+        goto end;
 
-   if(record->data_physical_address == 0)
-       goto end;
+    if( (record->northbridge_infos & 7) == 3 )
+        this_cpu(stats).total_samples_L3DRAM++;
 
-   if(record->data_linear_address < min_lin_address
-      || record->data_linear_address > max_lin_address)
-       goto end;
+    gfn = find_gfn_for_vaddr(record->data_linear_address);
+    if ( gfn == INVALID_GFN )
+        goto end;
 
-   per_cpu(stats, cpu).total_samples++;
 
-   /* rbtree_add_sample(!guest_mode(regs), record, smp_processor_id(), */
-   /* 		     current->vcpu_id, current->domain->domain_id); */
-   rbtree_add_sample(0, record, smp_processor_id(),
-		     current->vcpu_id, current->domain->domain_id);
+    ((struct ibs_record *) record)->data_linear_address = gfn << PAGE_SHIFT;
+
+    if ( record->data_physical_address == 0 )
+        goto end;
+
+    if ( record->data_linear_address < min_lin_address
+         || record->data_linear_address > max_lin_address )
+        goto end;
+
+    this_cpu(stats).total_samples++;
+
+    rbtree_add_sample(0, record, smp_processor_id(), current->vcpu_id,
+                      current->domain->domain_id);
 
 end:
-   rdtscll(time_stop);
-   per_cpu(stats, cpu).time_spent_in_NMI += time_stop - time_start;
+    time_stop = NOW();
+    this_cpu(stats).time_spent_in_NMI += time_stop - time_start;
 }
 
 /**
@@ -137,18 +138,24 @@ void carrefour_ibs_exit(void) {
 }
 
 void carrefour_ibs_start() {
-   int cpu;
-   for_each_online_cpu(cpu) {
-      memset(&per_cpu(stats, cpu), 0, sizeof(per_cpu(stats, cpu)));
-   }
+    static unsigned long prevrate = 0;
+    int cpu;
 
-   ibs_setevent(IBS_EVENT_OP);
-   ibs_setrate(sampling_rate);
-   ibs_enable();
+    for_each_online_cpu(cpu)
+        memset(&per_cpu(stats, cpu), 0, sizeof(per_cpu(stats, cpu)));
+
+    ibs_setevent(IBS_EVENT_OP);
+    if ( prevrate != sampling_rate )
+        ibs_setrate(sampling_rate, IBS_RATE_IPS);
+    prevrate = sampling_rate;
+    ibs_enable();
 }
 
 int carrefour_ibs_stop() {
-   int cpu, total_interrupts = 0, total_samples = 0, total_samples_L3DRAM = 0;
+   int cpu;
+   unsigned long total_interrupts = 0, total_samples = 0,
+       total_samples_L3DRAM = 0;
+
    ibs_disable();
 
    for_each_online_cpu(cpu) {
@@ -157,8 +164,9 @@ int carrefour_ibs_stop() {
 	   total_samples_L3DRAM += per_cpu(stats, cpu).total_samples_L3DRAM;
 	   run_stats.time_spent_in_NMI += per_cpu(stats, cpu).time_spent_in_NMI;
    }
+
    printu("Sampling: %lx op=%d considering L1&L2=%d\n", sampling_rate, carrefour_module_options[IBS_INSTRUCTION_BASED].value, carrefour_module_options[IBS_CONSIDER_CACHES].value);
-   printu("Total interrupts %d Total Samples %d\n", total_interrupts, total_samples);
+   printu("Total interrupts %lu Total Samples %lu\n", total_interrupts, total_samples);
 
    return total_samples_L3DRAM;
 }

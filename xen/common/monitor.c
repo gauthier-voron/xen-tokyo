@@ -758,7 +758,7 @@ static int enable_monitoring_ibs(void)
         return ret;
 
     ibs_setevent(IBS_EVENT_OP);
-    ibs_setrate(monitor_rate);
+    ibs_setrate(monitor_rate, IBS_RATE_RAW);
     ibs_sethandler(ibs_nmi_handler);
     ibs_enable();
 
@@ -850,7 +850,7 @@ int monitor_migration_setrate(unsigned long rate)
     if ( monitoring_started )
     {
         if ( ibs_capable() )
-            ibs_setrate(rate);
+            ibs_setrate(rate, IBS_RATE_RAW);
         else if ( pebs_capable() )
             ;
         else

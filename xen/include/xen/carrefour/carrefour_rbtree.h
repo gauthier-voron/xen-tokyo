@@ -69,6 +69,8 @@ struct pagetree {
    int                  initialized;
 };
 
+struct carrefour_run_stats;
+
 void rbtree_load_module(void);
 void rbtree_remove_module(void);
 

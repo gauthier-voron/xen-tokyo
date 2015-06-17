@@ -4,6 +4,7 @@
 #include <asm/processor.h>
 #include <asm/xenoprof.h>
 #include <xen/spinlock.h>
+#include <xen/time.h>
 
 /*
  * IBS should be initialized by the ibs_init() function of the Xenoprofile
@@ -26,34 +27,125 @@ static void (*ibs_handler)(const struct ibs_record *record,
 static DEFINE_PER_CPU(atomic_t, ibs_disabling);
 static DEFINE_PER_CPU(atomic_t, ibs_disabled);
 
+
+static DEFINE_PER_CPU(unsigned long, ibs_current_rate);
+
+
+/* count of nanoseconds between two modifications of the IBS rate */
+static unsigned long ibs_tick_period;
+
+/* count of IBS NMI each core wants to reach at the next tick */
+static unsigned long ibs_nmi_goal;
+
+/* time of the last tick */
+static DEFINE_PER_CPU(unsigned long, ibs_last_tick);
+
+/* actual count of IBS NMI since the last tick */
+static DEFINE_PER_CPU(unsigned long, ibs_nmi_count);
+
+/* divisor of each increment (or decrement) to the current rate */
+#define IBS_RATE_INERTIA   10
+
+#define IBS_RATE_MIN       65536
+#define IBS_RATE_MAX       (cpu_khz)
+#define IBS_IPS_SPLIT_MIN  500
+
+
+static inline void ibs_adapt_rate(void)
+{
+    unsigned long cur, vec;
+    unsigned long now = NOW();
+
+    if ( ! ibs_nmi_goal )
+        return;
+
+    if ( now > this_cpu(ibs_last_tick) + ibs_tick_period ) {
+        cur = this_cpu(ibs_current_rate);
+        vec = cur * this_cpu(ibs_nmi_count) / ibs_nmi_goal;
+
+        if ( vec < cur )
+            this_cpu(ibs_current_rate) -= (cur - vec) / IBS_RATE_INERTIA;
+        else
+            this_cpu(ibs_current_rate) += (vec - cur) / IBS_RATE_INERTIA;
+
+        if ( this_cpu(ibs_current_rate) < IBS_RATE_MIN )
+            this_cpu(ibs_current_rate) = IBS_RATE_MIN;
+        if ( this_cpu(ibs_current_rate) > IBS_RATE_MAX )
+            this_cpu(ibs_current_rate) = IBS_RATE_MAX;
+
+        this_cpu(ibs_last_tick) = now;
+        this_cpu(ibs_nmi_count) = 0;
+    }
+
+    this_cpu(ibs_nmi_count)++;
+}
+
+static inline void handle_ibs_fetch(u64 ctrl, const struct cpu_user_regs *regs)
+{
+    struct ibs_record record;
+
+    record.record_mode = IBS_RECORD_MODE_FETCH | IBS_RECORD_MODE_ILA;
+
+    record.fetch_infos = ctrl;
+
+    rdmsr_safe(MSR_AMD64_IBSFETCHLINAD, record.inst_linear_address);
+
+    if ( ctrl & IBS_RECORD_IPA )
+    {
+        record.record_mode |= IBS_RECORD_MODE_IPA;
+        rdmsr_safe(MSR_AMD64_IBSFETCHPHYSAD, record.inst_physical_address);
+    }
+
+    ibs_handler(&record, regs);
+}
+
+static inline void handle_ibs_op(const struct cpu_user_regs *regs)
+{
+    struct ibs_record record;
+
+    record.record_mode = IBS_RECORD_MODE_OP;
+
+    rdmsr_safe(MSR_AMD64_IBSOPDATA, record.branch_infos);
+    rdmsr_safe(MSR_AMD64_IBSOPDATA2, record.northbridge_infos);
+    rdmsr_safe(MSR_AMD64_IBSOPDATA3, record.cache_infos);
+
+    if ( record.branch_infos & IBS_RECORD_ILA )
+    {
+        record.record_mode |= IBS_RECORD_MODE_ILA;
+        rdmsr_safe(MSR_AMD64_IBSOPRIP, record.inst_linear_address);
+    }
+
+    if ( record.cache_infos & IBS_RECORD_DLA )
+    {
+        record.record_mode |= IBS_RECORD_MODE_DLA;
+        rdmsr_safe(MSR_AMD64_IBSDCLINAD, record.data_linear_address);
+    }
+
+    if ( record.cache_infos & IBS_RECORD_DPA )
+    {
+        record.record_mode |= IBS_RECORD_MODE_DPA;
+        rdmsr_safe(MSR_AMD64_IBSDCPHYSAD, record.data_physical_address);
+    }
+
+    ibs_handler(&record, regs);
+}
+
 int nmi_ibs(const struct cpu_user_regs *regs)
 {
     u64 val;
     int ret = 0;
-    struct ibs_record record;
+
+    ibs_adapt_rate();
 
     rdmsr_safe(MSR_AMD64_IBSFETCHCTL, val);
     if ( val & IBS_FETCH_VAL )
     {
+        /* TODO: what is the goal of this test ? */
         if ( val & IBS_FETCH_ENABLE && ibs_handler )
-        {
-            record.record_mode = IBS_RECORD_MODE_FETCH
-                | IBS_RECORD_MODE_ILA;
+            handle_ibs_fetch(val, regs);
 
-            record.fetch_infos = val;
-            rdmsr_safe(MSR_AMD64_IBSFETCHLINAD, record.inst_linear_address);
-
-            if ( val & IBS_RECORD_IPA )
-            {
-                record.record_mode |= IBS_RECORD_MODE_IPA;
-                rdmsr_safe(MSR_AMD64_IBSFETCHPHYSAD,
-                           record.inst_physical_address);
-            }
-
-            ibs_handler(&record, regs);
-        }
-
-        val &= ~(IBS_FETCH_VAL | IBS_FETCH_CNT);
+        val &= ~(IBS_FETCH_VAL | IBS_FETCH_CNT | IBS_FETCH_MAX_CNT);
+        val |= IBS_FETCH_SET_MAX_CNT(this_cpu(ibs_current_rate));
         wrmsr_safe(MSR_AMD64_IBSFETCHCTL, val);
         ret = 1;
     }
@@ -61,37 +153,12 @@ int nmi_ibs(const struct cpu_user_regs *regs)
     rdmsr_safe(MSR_AMD64_IBSOPCTL, val);
     if ( val & IBS_OP_VAL )
     {
+        /* TODO: what is the goal of this test ? */
         if ( val & IBS_OP_ENABLE && ibs_handler )
-        {
-            record.record_mode = IBS_RECORD_MODE_OP;
+            handle_ibs_op(regs);
 
-            rdmsr_safe(MSR_AMD64_IBSOPDATA, record.branch_infos);
-            rdmsr_safe(MSR_AMD64_IBSOPDATA2, record.northbridge_infos);
-            rdmsr_safe(MSR_AMD64_IBSOPDATA3, record.cache_infos);
-
-            if ( record.branch_infos & IBS_RECORD_ILA )
-            {
-                record.record_mode |= IBS_RECORD_MODE_ILA;
-                rdmsr_safe(MSR_AMD64_IBSOPRIP, record.inst_linear_address);
-            }
-
-            if ( record.cache_infos & IBS_RECORD_DLA )
-            {
-                record.record_mode |= IBS_RECORD_MODE_DLA;
-                rdmsr_safe(MSR_AMD64_IBSDCLINAD, record.data_linear_address);
-            }
-
-            if ( record.cache_infos & IBS_RECORD_DPA )
-            {
-                record.record_mode |= IBS_RECORD_MODE_DPA;
-                rdmsr_safe(MSR_AMD64_IBSDCPHYSAD,
-                           record.data_physical_address);
-            }
-
-            ibs_handler(&record, regs);
-        }
-
-        val &= ~(IBS_OP_VAL | IBS_OP_CNT);
+        val &= ~(IBS_OP_VAL | IBS_OP_CNT | IBS_OP_MAX_CNT);
+        val |= IBS_OP_SET_MAX_CNT(this_cpu(ibs_current_rate));
         wrmsr_safe(MSR_AMD64_IBSOPCTL, val);
         ret = 1;
     }
@@ -136,12 +203,48 @@ int ibs_setevent(unsigned long event)
     return 0;
 }
 
-int ibs_setrate(unsigned long rate)
+
+static void ibs_adjust_ips_params(unsigned long rate)
 {
+    unsigned long period = 1000000000;  /* 1 second (in nanoseconds) */
+
+    while ( rate >= IBS_IPS_SPLIT_MIN && period >= 10 )
+    {
+        rate /= 10;
+        period /= 10;
+    }
+
+    ibs_nmi_goal = rate;
+    ibs_tick_period = period;
+}
+
+int ibs_setrate(unsigned long rate, int flags)
+{
+    unsigned long raw;
+    int cpu;
+
     if ( !ibs_acquired )
         return -1;
-    ibs_config.max_cnt_fetch = rate;
-    ibs_config.max_cnt_op = rate;
+
+    switch ( flags & IBS_RATE_TYPE )
+    {
+    case IBS_RATE_RAW:
+        raw = rate;
+        ibs_nmi_goal = 0;
+        break;
+    case IBS_RATE_IPS:
+        raw = (1000 * cpu_khz) / rate;
+        ibs_adjust_ips_params(rate);
+        break;
+    default:
+        return -1;
+    }
+
+    for_each_online_cpu ( cpu )
+        per_cpu(ibs_current_rate, cpu) = raw;
+
+    ibs_config.max_cnt_fetch = raw;
+    ibs_config.max_cnt_op = raw;
     return 0;
 }
 

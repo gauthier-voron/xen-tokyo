@@ -17,6 +17,7 @@ along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
+#include <asm/mm.h>
 #include <asm/msr.h>
 #include <xen/carrefour/carrefour_alloc.h>
 #include <xen/carrefour/carrefour_main.h>
@@ -30,6 +31,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
  * /proc/inter_cntl
  */
 static int running;
+static int loaded;
 extern int enable_carrefour;
 
 extern unsigned enable_replication;
@@ -298,15 +300,16 @@ int carrefour_init_module(void) {
 }
 
 void carrefour_exit_module(void) {
-   if ( !loaded )
-      return;
-   loaded = 0;
+    if ( !loaded )
+        return;
+    loaded = 0;
 
-   carrefour_ibs_exit();
 
-   rbtree_remove_module();
+    carrefour_ibs_exit();
 
-   printk("sdp: shutdown\n");
+    rbtree_remove_module();
+
+    printk("sdp: shutdown\n");
 }
 
 /*

@@ -105,14 +105,14 @@ static event_t per_core_events[] = {
       .config  = 0xff7e,
       .leader  = -1,
       .used_by = USED_BY_KTHP, // Should only be used by one or another for now
-   },  
-   {
-      .name    = "minor-faults",
-      .type    = PERF_TYPE_SOFTWARE,
-      .config  = PERF_COUNT_SW_PAGE_FAULTS_MIN, 
-      .leader  = -1,
-      .used_by = USED_BY_KTHP, // Should only be used by one or another for now
    }
+   /* { */
+   /*    .name    = "minor-faults", */
+   /*    .type    = PERF_TYPE_SOFTWARE, */
+   /*    .config  = PERF_COUNT_SW_PAGE_FAULTS_MIN,  */
+   /*    .leader  = -1, */
+   /*    .used_by = USED_BY_KTHP, // Should only be used by one or another for now */
+   /* } */
 };
 
 static event_t per_node_events[] = {
@@ -1110,6 +1110,9 @@ void set_affinity(int cpu_id) {
       exit(1);
    }
 }
+
+
+#include "model.h"
 
 int main(int argc, char**argv) {
    int i;

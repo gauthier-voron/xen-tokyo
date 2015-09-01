@@ -8,6 +8,7 @@
 /* #endif */
 
 #include "xencarrefour.h"
+#include "model.h"
 
 
 unsigned long time_now(void)
@@ -20,13 +21,9 @@ unsigned long time_now(void)
 
 
 
-#define CPUCOUNT    6
-#define NODCOUNT    8
-
-
 int numa_num_configured_cpus(void)
 {
-	return CPUCOUNT * NODCOUNT;
+	return current_model->node_count * current_model->core_per_node;
 }
 
 struct bitmask *numa_bitmask_alloc(unsigned int n)
@@ -47,10 +44,11 @@ void numa_free_cpumask(struct bitmask *bmp)
 
 int numa_node_to_cpus(int node, struct bitmask *mask)
 {
-	unsigned int i;
+	unsigned int i, core;
 	size_t s = sizeof(unsigned long);
 
-	for (i=node*CPUCOUNT; i<(node+1)*CPUCOUNT; i++)
+	core = current_model->core_per_node;
+	for (i=node*core; i<(node+1)*core; i++)
 		mask->arr[i/s] |= (1 << (i%s));
 
 	return 0;
@@ -69,7 +67,7 @@ void numa_bitmask_free(struct bitmask *bmp)
 
 int numa_num_configured_nodes(void)
 {
-	return NODCOUNT;
+	return current_model->node_count;
 }
 
 

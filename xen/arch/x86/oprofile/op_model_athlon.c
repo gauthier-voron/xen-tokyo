@@ -390,6 +390,7 @@ static inline void start_ibs(void)
  
 static void athlon_start(struct op_msrs const * const msrs)
 {
+#ifndef BIGOS_CARREFOUR
 	uint64_t msr_content;
 	int i;
 	unsigned int const nr_ctrs = model->num_counters;
@@ -400,6 +401,11 @@ static void athlon_start(struct op_msrs const * const msrs)
 			CTRL_WRITE(msr_content, msrs, i);
 		}
 	}
+#else
+	if (msrs)
+		;
+#endif
+
 	start_ibs();
 }
 
@@ -419,6 +425,7 @@ static void stop_ibs(void)
 
 static void athlon_stop(struct op_msrs const * const msrs)
 {
+#ifndef BIGOS_CARREFOUR
 	uint64_t msr_content;
 	int i;
 	unsigned int const nr_ctrs = model->num_counters;
@@ -430,30 +437,85 @@ static void athlon_stop(struct op_msrs const * const msrs)
 		CTRL_SET_INACTIVE(msr_content);
 		CTRL_WRITE(msr_content, msrs, i);
 	}
+#else
+	if (msrs)
+		;
+#endif
 
 	stop_ibs();
 }
 
 #define IBSCTL_LVTOFFSETVAL             (1 << 8)
 #define APIC_EILVT_MSG_NMI              0x4
-#define APIC_EILVT_LVTOFF_IBS           1
+#define APIC_EILVT_LVTOFF_IBS_10H       1
+#define APIC_EILVT_LVTOFF_IBS_15H       0
 #define APIC_EILVTn(n)                  (0x500 + 0x10 * n)
 static inline void __init init_ibs_nmi_per_cpu(void *arg)
 {
 	unsigned long reg;
+	u8 family = current_cpu_data.x86;
 
-	reg = (APIC_EILVT_LVTOFF_IBS << 4) + APIC_EILVTn(0);
+	switch (family) {
+	case 0x10:
+		reg = APIC_EILVTn(APIC_EILVT_LVTOFF_IBS_10H);
+		break;
+	case 0x15:
+		reg = APIC_EILVTn(APIC_EILVT_LVTOFF_IBS_15H);
+		break;
+	default:
+		BUG();
+		break;
+	}
+
 	apic_write(reg, APIC_EILVT_MSG_NMI << 8);
 }
 
-#define PCI_DEVICE_ID_AMD_10H_NB_MISC   0x1203
 #define IBSCTL                          0x1cc
+static int __init init_ibs_nmi_10h(int bus, int dev, int func)
+{
+	u32 value;
+
+	pci_conf_write32(0, bus, dev, func, IBSCTL,
+			 IBSCTL_LVTOFFSETVAL | APIC_EILVT_LVTOFF_IBS_10H);
+
+	value = pci_conf_read32(0, bus, dev, func, IBSCTL);
+
+	if (value != (IBSCTL_LVTOFFSETVAL | APIC_EILVT_LVTOFF_IBS_10H)) {
+		printk("Xenoprofile: Failed to setup IBS LVT offset, "
+		       "IBSCTL = %#x\n", value);
+		return 1;
+	}
+
+	return 0;
+}
+
+#define PCI_DEVICE_ID_AMD_10H_NB_MISC   0x1203
+#define PCI_DEVICE_ID_AMD_15H_NB_MISC   0x1603
+static int __init init_ibs_nmi_at(int bus, int dev, int func)
+{
+	u32 id;
+	u16 vendor_id, dev_id;
+
+	id = pci_conf_read32(0, bus, dev, func, PCI_VENDOR_ID);
+
+	vendor_id = id & 0xffff;
+	dev_id = (id >> 16) & 0xffff;
+
+	if (vendor_id == PCI_VENDOR_ID_AMD) {
+		if (dev_id == PCI_DEVICE_ID_AMD_10H_NB_MISC) {
+			return init_ibs_nmi_10h(bus, dev, func);
+		} else if (dev_id == PCI_DEVICE_ID_AMD_15H_NB_MISC) {
+			return 0;
+		}
+	}
+
+	return -1;
+}
+
 static int __init init_ibs_nmi(void)
 {
 	int bus, dev, func;
-	u32 id, value;
-	u16 vendor_id, dev_id;
-	int nodes;
+	int nodes, ret;
 
 	/* per CPU setup */
 	on_each_cpu(init_ibs_nmi_per_cpu, NULL, 1);
@@ -462,27 +524,11 @@ static int __init init_ibs_nmi(void)
 	for (bus = 0; bus < 256; bus++) {
 		for (dev = 0; dev < 32; dev++) {
 			for (func = 0; func < 8; func++) {
-				id = pci_conf_read32(0, bus, dev, func, PCI_VENDOR_ID);
-
-				vendor_id = id & 0xffff;
-				dev_id = (id >> 16) & 0xffff;
-
-				if ((vendor_id == PCI_VENDOR_ID_AMD) &&
-					(dev_id == PCI_DEVICE_ID_AMD_10H_NB_MISC)) {
-
-					pci_conf_write32(0, bus, dev, func, IBSCTL,
-						IBSCTL_LVTOFFSETVAL | APIC_EILVT_LVTOFF_IBS);
-
-					value = pci_conf_read32(0, bus, dev, func, IBSCTL);
-
-					if (value != (IBSCTL_LVTOFFSETVAL |
-						APIC_EILVT_LVTOFF_IBS)) {
-						printk("Xenoprofile: Failed to setup IBS LVT offset, "
-							"IBSCTL = %#x\n", value);
-						return 1;
-					}
+				ret = init_ibs_nmi_at(bus, dev, func);
+				if (ret == 1)
+					return 1;
+				if (ret == 0)
 					nodes++;
-				}
 			}
 		}
 	}

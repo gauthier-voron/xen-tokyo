@@ -24,6 +24,7 @@
 #include <asm/current.h>
 #include <asm/hardirq.h>
 #include <asm/p2m.h>
+#include <asm/mm.h>
 #include <xen/numa.h>
 #include <public/memory.h>
 #include <xsm/xsm.h>
@@ -1158,6 +1159,9 @@ static int __memory_move_replace(struct domain *d, unsigned long gfn,
     return 0;
 }
 
+/* qucik test - remove */
+extern int movelog_source;
+
 unsigned long memory_move(struct domain *d, unsigned long gfn,
                           unsigned long node, int flags)
 {
@@ -1173,15 +1177,6 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
     memflags = MEMF_bits(memflags);
     memflags = memflags | MEMF_node(node) | MEMF_exact_node;
 
-    /*
-     * TODO: it may be necessary to lock the p2m of the domain during the
-     * entire execution of this function.
-     * The problem is the guest_physmap_add_page() invocation in
-     * __memory_move_replace() already takes a (non-reentrant) lock.
-     * The solution could be to add a parameter "assume already locked" to this
-     * function and provide a compatibility interface with this parameter to 0.
-     */
-
     /* In success, deassign the old mfn from the domain */
     old = __memory_move_steal(d, gfn);                        /* get the gfn */
     if ( unlikely(old == NULL) )                         /* unless it failed */
@@ -1193,6 +1188,9 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
         ret = page_to_mfn(old);
         goto fail_old;
     }
+
+    /* quick test - remove */
+    movelog_source = onode;
 
     new = alloc_domheap_pages(NULL, 0, memflags);
     if ( unlikely(new == NULL) )
@@ -1207,10 +1205,10 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
  fail_new:
     free_domheap_pages(new, 0);
  fail_old:
-    put_gfn(d, gfn);                                          /* put the gfn */
     /* Now reassign the old mfn to the domain */
     if ( assign_pages(d, old, 0, MEMF_no_refcount) )
         BUG();
+    put_gfn(d, gfn);                                          /* put the gfn */
  fail_gfn:
     return INVALID_MFN;
 }

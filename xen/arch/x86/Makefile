@@ -1,3 +1,5 @@
+include $(XEN_ROOT)/Commands.mk
+
 subdir-y += acpi
 subdir-y += cpu
 subdir-y += genapic
@@ -82,40 +84,49 @@ ALL_OBJS := $(BASEDIR)/arch/x86/boot/built_in.o $(BASEDIR)/arch/x86/efi/built_in
 ifeq ($(lto),y)
 # Gather all LTO objects together
 prelink_lto.o: $(ALL_OBJS)
-	$(LD_LTO) -r -o $@ $^
+	$(call cmd-print,  LDLTO   $@)
+	$(Q)$(LD_LTO) -r -o $@ $^
 
 prelink-efi_lto.o: $(ALL_OBJS) efi/runtime.o efi/compat.o
-	$(guard) $(LD_LTO) -r -o $@ $(filter-out %/efi/built_in.o,$^)
+	$(call cmd-print,  LDLTO   $@)
+	$(Q)$(guard) $(LD_LTO) -r -o $@ $(filter-out %/efi/built_in.o,$^)
 
 # Link it with all the binary objects
 prelink.o: $(patsubst %/built_in.o,%/built_in_bin.o,$(ALL_OBJS)) prelink_lto.o
-	$(LD) $(LDFLAGS) -r -o $@ $^
+	$(call cmd-print,  LD      $@)
+	$(Q)$(LD) $(LDFLAGS) -r -o $@ $^
 
 prelink-efi.o: $(patsubst %/built_in.o,%/built_in_bin.o,$(ALL_OBJS)) prelink-efi_lto.o efi/boot.init.o
-	$(guard) $(LD) $(LDFLAGS) -r -o $@ $^
+	$(call cmd-print,  LD      $@)
+	$(Q)$(guard) $(LD) $(LDFLAGS) -r -o $@ $^
 else
 prelink.o: $(ALL_OBJS)
-	$(LD) $(LDFLAGS) -r -o $@ $^
+	$(call cmd-print,  LD      $@)
+	$(Q)$(LD) $(LDFLAGS) -r -o $@ $^
 
 prelink-efi.o: $(ALL_OBJS) efi/boot.init.o efi/runtime.o efi/compat.o
-	$(guard) $(LD) $(LDFLAGS) -r -o $@ $(filter-out %/efi/built_in.o,$^)
+	$(call cmd-print,  LD      $@)
+	$(Q)$(guard) $(LD) $(LDFLAGS) -r -o $@ $(filter-out %/efi/built_in.o,$^)
 endif
 
 $(BASEDIR)/common/symbols-dummy.o:
 	$(MAKE) -f $(BASEDIR)/Rules.mk -C $(BASEDIR)/common symbols-dummy.o
 
 $(TARGET)-syms: prelink.o xen.lds $(BASEDIR)/common/symbols-dummy.o
-	$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
+	$(call cmd-print,  LD      $@)
+	$(Q)$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
 	    $(BASEDIR)/common/symbols-dummy.o -o $(@D)/.$(@F).0
-	$(NM) -n $(@D)/.$(@F).0 | $(BASEDIR)/tools/symbols >$(@D)/.$(@F).0.S
-	$(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).0.o
-	$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
+	$(Q)$(NM) -n $(@D)/.$(@F).0 | $(BASEDIR)/tools/symbols \
+            >$(@D)/.$(@F).0.S
+	$(Q)$(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).0.o
+	$(Q)$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
 	    $(@D)/.$(@F).0.o -o $(@D)/.$(@F).1
-	$(NM) -n $(@D)/.$(@F).1 | $(BASEDIR)/tools/symbols >$(@D)/.$(@F).1.S
-	$(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).1.o
-	$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
+	$(Q)$(NM) -n $(@D)/.$(@F).1 | $(BASEDIR)/tools/symbols \
+            >$(@D)/.$(@F).1.S
+	$(Q)$(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).1.o
+	$(Q)$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
 	    $(@D)/.$(@F).1.o -o $@
-	rm -f $(@D)/.$(@F).[0-9]*
+	$(Q)rm -f $(@D)/.$(@F).[0-9]*
 
 EFI_LDFLAGS = $(patsubst -m%,-mi386pep,$(LDFLAGS)) --subsystem=10
 EFI_LDFLAGS += --image-base=$(1) --stack=0,0 --heap=0,0 --strip-debug
@@ -127,25 +138,27 @@ EFI_LDFLAGS += --major-subsystem-version=2 --minor-subsystem-version=0
 
 $(TARGET).efi: VIRT_BASE = 0x$(shell $(NM) efi/relocs-dummy.o | sed -n 's, A VIRT_START$$,,p')
 $(TARGET).efi: ALT_BASE = 0x$(shell $(NM) efi/relocs-dummy.o | sed -n 's, A ALT_START$$,,p')
+
 # Don't use $(wildcard ...) here - at least make 3.80 expands this too early!
 $(TARGET).efi: guard = $(if $(shell echo efi/dis* | grep disabled),:)
 $(TARGET).efi: prelink-efi.o efi.lds efi/relocs-dummy.o $(BASEDIR)/common/symbols-dummy.o efi/mkreloc
-	$(foreach base, $(VIRT_BASE) $(ALT_BASE), \
-	          $(guard) $(LD) $(call EFI_LDFLAGS,$(base)) -T efi.lds -N $< efi/relocs-dummy.o \
-	                $(BASEDIR)/common/symbols-dummy.o -o $(@D)/.$(@F).$(base).0 &&) :
-	$(guard) efi/mkreloc $(foreach base,$(VIRT_BASE) $(ALT_BASE),$(@D)/.$(@F).$(base).0) >$(@D)/.$(@F).0r.S
-	$(guard) $(NM) -n $(@D)/.$(@F).$(VIRT_BASE).0 | $(guard) $(BASEDIR)/tools/symbols >$(@D)/.$(@F).0s.S
-	$(guard) $(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).0r.o $(@D)/.$(@F).0s.o
-	$(foreach base, $(VIRT_BASE) $(ALT_BASE), \
+	$(call cmd-print,  LD      $@)
+	$(Q)$(foreach base, $(VIRT_BASE) $(ALT_BASE), \
+	  $(guard) $(LD) $(call EFI_LDFLAGS,$(base)) -T efi.lds -N $< efi/relocs-dummy.o \
+	  $(BASEDIR)/common/symbols-dummy.o -o $(@D)/.$(@F).$(base).0 &&) :
+	$(Q)$(guard) efi/mkreloc $(foreach base,$(VIRT_BASE) $(ALT_BASE),$(@D)/.$(@F).$(base).0) >$(@D)/.$(@F).0r.S
+	$(Q)$(guard) $(NM) -n $(@D)/.$(@F).$(VIRT_BASE).0 | $(guard) $(BASEDIR)/tools/symbols >$(@D)/.$(@F).0s.S
+	$(Q)$(guard) $(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).0r.o $(@D)/.$(@F).0s.o
+	$(Q)$(foreach base, $(VIRT_BASE) $(ALT_BASE), \
 	          $(guard) $(LD) $(call EFI_LDFLAGS,$(base)) -T efi.lds -N $< \
 	                $(@D)/.$(@F).0r.o $(@D)/.$(@F).0s.o -o $(@D)/.$(@F).$(base).1 &&) :
-	$(guard) efi/mkreloc $(foreach base,$(VIRT_BASE) $(ALT_BASE),$(@D)/.$(@F).$(base).1) >$(@D)/.$(@F).1r.S
-	$(guard) $(NM) -n $(@D)/.$(@F).$(VIRT_BASE).1 | $(guard) $(BASEDIR)/tools/symbols >$(@D)/.$(@F).1s.S
-	$(guard) $(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).1r.o $(@D)/.$(@F).1s.o
-	$(guard) $(LD) $(call EFI_LDFLAGS,$(VIRT_BASE)) -T efi.lds -N $< \
+	$(Q)$(guard) efi/mkreloc $(foreach base,$(VIRT_BASE) $(ALT_BASE),$(@D)/.$(@F).$(base).1) >$(@D)/.$(@F).1r.S
+	$(Q)$(guard) $(NM) -n $(@D)/.$(@F).$(VIRT_BASE).1 | $(guard) $(BASEDIR)/tools/symbols >$(@D)/.$(@F).1s.S
+	$(Q)$(guard) $(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).1r.o $(@D)/.$(@F).1s.o
+	$(Q)$(guard) $(LD) $(call EFI_LDFLAGS,$(VIRT_BASE)) -T efi.lds -N $< \
 	                $(@D)/.$(@F).1r.o $(@D)/.$(@F).1s.o -o $@
-	if $(guard) false; then rm -f $@; echo 'EFI support disabled'; fi
-	rm -f $(@D)/.$(@F).[0-9]*
+	$(Q)if $(guard) false; then rm -f $@; fi
+	$(Q)rm -f $(@D)/.$(@F).[0-9]*
 
 efi/boot.init.o efi/runtime.o efi/compat.o: $(BASEDIR)/arch/x86/efi/built_in.o
 efi/boot.init.o efi/runtime.o efi/compat.o: ;

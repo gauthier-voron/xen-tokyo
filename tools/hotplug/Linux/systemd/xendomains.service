@@ -1,0 +1,11 @@
+[Unit]
+Description = All Xen user domains
+
+[Service]
+Type = oneshot
+RemainAfterExit = yes
+ExecStart = /usr/lib/systemd/scripts/xendomains start
+ExecStop = /usr/lib/systemd/scripts/xendomains stop
+
+[Install]
+WantedBy = multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description = Domain watchdog daemon
+
+[Service]
+Type = oneshot
+RemainAfterExit = yes
+ExecStart = /usr/lib/systemd/scripts/xen-watchdog start
+ExecStop = /usr/lib/systemd/scripts/xen-watchdog stop
+
+[Install]
+WantedBy = multi-user.target

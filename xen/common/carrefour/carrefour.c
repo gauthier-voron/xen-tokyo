@@ -19,9 +19,11 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 #include <xen/carrefour/carrefour_alloc.h>
 #include <xen/carrefour/carrefour_main.h>
+#include <xen/time.h>
 
 struct carrefour_run_stats     run_stats;
 struct carrefour_global_stats  global_stats;
+DEFINE_PER_CPU(struct carrefour_run_stats, core_run_stats);
 /* struct carrefour_hook_stats_t  hook_stats; */
 
 static void decide_pages_fate(void); 
@@ -47,7 +49,10 @@ unsigned long interleaving_distrib_max = 0;
 unsigned long interleaving_proba[MAX_NUMNODES];
 
 void carrefour(void) {
+   unsigned long start = NOW();
    decide_pages_fate();
+   run_stats.time_spent_in_profiling += NOW() - start;
+   this_cpu(core_run_stats).time_spent_in_profiling += NOW() - start;
 }
 
 /****
@@ -516,7 +521,7 @@ void decide_pages_fate(void) {
    /*    }    */
    /* }    */
    /* else { */
-      run_stats.time_spent_in_migration = 0;
+   /*    run_stats.time_spent_in_migration = 0; */
    /* }    */
 
    if(run_stats.nb_migration_orders + run_stats.nb_interleave_orders) {
@@ -575,19 +580,19 @@ void decide_pages_fate(void) {
          run_stats.nb_migration_orders, run_stats.nb_interleave_orders, run_stats.nb_replication_orders
          );
 
-   printu("%lu pages, %lu samples, avg = %lu\n", 
+   printu("            %lu pages, %lu samples, avg = %lu\n", 
          rbtree_stats.nr_pages_in_tree, rbtree_stats.total_samples_in_tree,
          (unsigned long) run_stats.avg_nr_samples_per_page);
 
    if(carrefour_module_options[DETAILED_STATS].value) {
-      printu("NPPT = %lu -- NSAAO = %lu -- TNO = %lu -- TNSIT = %lu -- TNSM = %lu\n", 
+      printk("            NPPT = %lu -- NSAAO = %lu -- TNO = %lu -- TNSIT = %lu -- TNSM = %lu\n", 
             run_stats.nr_of_process_pages_touched, run_stats.nr_of_samples_after_order, global_stats.total_nr_orders, rbtree_stats.total_samples_in_tree, rbtree_stats.total_samples_missed);
    }
 }
 
 
 void carrefour_init(void) {
-   memset(&run_stats, 0, sizeof(struct carrefour_run_stats));
+   /* memset(&run_stats, 0, sizeof(struct carrefour_run_stats)); */
 
    memset(&pages_to_interleave, 0, sizeof(pages_to_interleave));
    memset(&pages_to_replicate, 0, sizeof(pages_to_replicate));

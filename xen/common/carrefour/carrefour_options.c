@@ -33,6 +33,7 @@ const struct carrefour_module_option_t carrefour_module_options[CARREFOUR_OPTION
 
    // Related to IBS
    OPTS(ADAPTIVE_SAMPLING,       1),
+   OPTS(AUTOSTAB_SAMPLING,       0),
    
    //OPTS(IBS_RATE_ACCURATE,       0x1FFF0), //Quatchi -- ASPLOS
    //OPTS(IBS_RATE_CHEAP,          0x3FFE0), //Quatchi -- ASPLOS
@@ -42,18 +43,23 @@ const struct carrefour_module_option_t carrefour_module_options[CARREFOUR_OPTION
    //OPTS(IBS_RATE_CHEAP,          0x7FFC0), //Quatchi
    //OPTS(IBS_RATE_NO_ADAPTIVE,    0x1FFF0), //Quatchi
 
-   //OPTS(IBS_RATE_ACCURATE,       0x5FFF0), //Bulldozer
-   //OPTS(IBS_RATE_CHEAP,          0xFFFE0), //Bulldozer
-   //OPTS(IBS_RATE_NO_ADAPTIVE,    0x8FFF0), //Bulldozer
+   /* OPTS(IBS_RATE_ACCURATE,       0x5FFF0), //Bulldozer */
+   /* OPTS(IBS_RATE_CHEAP,          0xFFFE0), //Bulldozer */
+   /* OPTS(IBS_RATE_NO_ADAPTIVE,    0x8FFF0), //Bulldozer */
 
    /* OPTS(IBS_RATE_ACCURATE,       0xFFFF0), //Bulldozer */
    /* OPTS(IBS_RATE_CHEAP,          0xFFFE0), //Bulldozer */
    /* OPTS(IBS_RATE_NO_ADAPTIVE,    0xFFFF0), //Bulldozer */
 
-   /* rate in interrupt per core per second */
-   OPTS(IBS_RATE_ACCURATE,       2000),    /* Magny-Cour */
-   OPTS(IBS_RATE_CHEAP,          2000),    /* Magny-Cour */
-   OPTS(IBS_RATE_NO_ADAPTIVE,    2000),    /* Magny-Cour */
+   
+   OPTS(IBS_RATE_ACCURATE,       0x6fff0), /* AMD 48 C */
+   OPTS(IBS_RATE_CHEAP,          0xfffe0), /* AMD 48 C */
+   OPTS(IBS_RATE_NO_ADAPTIVE,    0x8fff0), /* AMD 48 C */
+
+   /* OPTS(IBS_RATE_ACCURATE,       0xffff0), /\* ERODS MC 4 *\/ */
+   /* OPTS(IBS_RATE_CHEAP,          0xfffe0), /\* ERODS MC 4 *\/ */
+   /* OPTS(IBS_RATE_NO_ADAPTIVE,    0xffff0), /\* ERODS MC 4 *\/ */
+
 
    OPTS(IBS_INSTRUCTION_BASED,   0),
    OPTS(IBS_CONSIDER_CACHES,     1),

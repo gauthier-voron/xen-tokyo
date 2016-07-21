@@ -1,0 +1,11 @@
+[Unit]
+Description = Common services for Xen management
+
+[Service]
+Type = oneshot
+RemainAfterExit = yes
+ExecStart = /usr/lib/systemd/scripts/xencommons start
+ExecStop = /usr/lib/systemd/scripts/xencommons stop
+
+[Install]
+WantedBy = multi-user.target

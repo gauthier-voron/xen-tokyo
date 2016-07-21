@@ -17,6 +17,7 @@
  * Place - Suite 330, Boston, MA 02111-1307 USA.
  */
 
+#include <xen/account.h>
 #include <xen/config.h>
 #include <xen/init.h>
 #include <xen/lib.h>
@@ -2209,6 +2210,7 @@ static struct hvm_function_table __initdata svm_function_table = {
     .nhvm_intr_blocked = nsvm_intr_blocked,
     .nhvm_hap_walk_L1_p2m = nsvm_hap_walk_L1_p2m,
 };
+
 
 void svm_vmexit_handler(struct cpu_user_regs *regs)
 {

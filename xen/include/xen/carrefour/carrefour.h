@@ -57,4 +57,5 @@ struct carrefour_run_stats {
 };
 
 extern struct carrefour_run_stats run_stats;
+DECLARE_PER_CPU(struct carrefour_run_stats, core_run_stats);
 #endif

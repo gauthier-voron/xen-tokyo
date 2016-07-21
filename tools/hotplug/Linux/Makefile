@@ -32,6 +32,9 @@ XEN_SCRIPT_DATA += block-common.sh
 UDEV_RULES_DIR = $(CONFIG_DIR)/udev
 UDEV_RULES = xen-backend.rules $(UDEV_RULES-y)
 
+SYSTEMD_DIR = /usr/lib/systemd/system/
+SYSTEMD_SCRIPT_DIR = /usr/lib/systemd/scripts/
+
 .PHONY: all
 all:
 
@@ -39,20 +42,23 @@ all:
 build:
 
 .PHONY: install
-install: all install-initd install-scripts install-udev
+install: all install-systemd install-scripts install-udev
 
-# See docs/misc/distro_mapping.txt for INITD_DIR location
-.PHONY: install-initd
-install-initd:
-	[ -d $(DESTDIR)$(INITD_DIR) ] || $(INSTALL_DIR) $(DESTDIR)$(INITD_DIR)
+.PHONY: install-systemd
+install-systemd:
+	[ -d $(DESTDIR)$(SYSTEMD_DIR) ] || $(INSTALL_DIR) $(DESTDIR)$(SYSTEMD_DIR)
+	[ -d $(DESTDIR)$(SYSTEMD_SCRIPT_DIR) ] || $(INSTALL_DIR) $(DESTDIR)$(SYSTEMD_SCRIPT_DIR)
 	[ -d $(DESTDIR)$(SYSCONFIG_DIR) ] || $(INSTALL_DIR) $(DESTDIR)$(SYSCONFIG_DIR)
 	[ -d $(DESTDIR)$(LIBEXEC) ] || $(INSTALL_DIR) $(DESTDIR)$(LIBEXEC)
 	$(INSTALL_PROG) $(XENDOMAINS_LIBEXEC) $(DESTDIR)$(LIBEXEC)
-	$(INSTALL_PROG) $(XENDOMAINS_INITD) $(DESTDIR)$(INITD_DIR)
+	$(INSTALL_PROG) $(XENDOMAINS_INITD) $(DESTDIR)$(SYSTEMD_SCRIPT_DIR)
 	$(INSTALL_DATA) $(XENDOMAINS_SYSCONFIG) $(DESTDIR)$(SYSCONFIG_DIR)/xendomains
-	$(INSTALL_PROG) $(XENCOMMONS_INITD) $(DESTDIR)$(INITD_DIR)
+	$(INSTALL_PROG) $(XENCOMMONS_INITD) $(DESTDIR)$(SYSTEMD_SCRIPT_DIR)
 	$(INSTALL_DATA) $(XENCOMMONS_SYSCONFIG) $(DESTDIR)$(SYSCONFIG_DIR)/xencommons
-	$(INSTALL_PROG) init.d/xen-watchdog $(DESTDIR)$(INITD_DIR)
+	$(INSTALL_PROG) init.d/xen-watchdog $(DESTDIR)$(SYSTEMD_SCRIPT_DIR)
+	$(INSTALL_DATA) systemd/xencommons.service $(DESTDIR)$(SYSTEMD_DIR)
+	$(INSTALL_DATA) systemd/xendomains.service $(DESTDIR)$(SYSTEMD_DIR)
+	$(INSTALL_DATA) systemd/xen-watchdog.service $(DESTDIR)$(SYSTEMD_DIR)
 
 .PHONY: install-scripts
 install-scripts:

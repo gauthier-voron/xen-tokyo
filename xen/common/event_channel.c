@@ -599,6 +599,14 @@ static long evtchn_close(evtchn_close_t *close)
     return __evtchn_close(current->domain, close->port);
 }
 
+#include <xen/account.h>
+
+DECLARE_BIGOS_PROBE(ipi_total);
+DECLARE_BIGOS_PROBE(ipi_send);
+DECLARE_BIGOS_PROBE(ipi_pending);
+DECLARE_BIGOS_PROBE(ipi_xsm);
+DECLARE_BIGOS_PROBE(ipi_lock);
+
 int evtchn_send(struct domain *d, unsigned int lport)
 {
     struct evtchn *lchn, *rchn;
@@ -606,7 +614,11 @@ int evtchn_send(struct domain *d, unsigned int lport)
     struct vcpu   *rvcpu;
     int            rport, ret = 0;
 
+    if (BIGOS_IS_ACCOUNTING(ipi_send))
+        BIGOS_START_ACCOUNT(ipi_lock);
     spin_lock(&ld->event_lock);
+    if (BIGOS_IS_ACCOUNTING(ipi_lock))
+        BIGOS_STOP_ACCOUNT(ipi_lock);
 
     if ( unlikely(!port_is_valid(ld, lport)) )
     {
@@ -623,7 +635,11 @@ int evtchn_send(struct domain *d, unsigned int lport)
         return -EINVAL;
     }
 
+    if (BIGOS_IS_ACCOUNTING(ipi_send))
+        BIGOS_START_ACCOUNT(ipi_xsm);
     ret = xsm_evtchn_send(XSM_HOOK, ld, lchn);
+    if (BIGOS_IS_ACCOUNTING(ipi_xsm))
+        BIGOS_STOP_ACCOUNT(ipi_xsm);
     if ( ret )
         goto out;
 
@@ -657,7 +673,11 @@ out:
 
 static void evtchn_set_pending(struct vcpu *v, int port)
 {
+    if (BIGOS_IS_ACCOUNTING(ipi_send))
+        BIGOS_START_ACCOUNT(ipi_pending);
     evtchn_port_set_pending(v, evtchn_from_port(v->domain, port));
+    if (BIGOS_IS_ACCOUNTING(ipi_pending))
+        BIGOS_STOP_ACCOUNT(ipi_pending);
 }
 
 int guest_enabled_event(struct vcpu *v, uint32_t virq)
@@ -1053,9 +1073,13 @@ long do_event_channel_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
     case EVTCHNOP_send: {
         struct evtchn_send send;
+        if (BIGOS_IS_ACCOUNTING(ipi_total))
+            BIGOS_START_ACCOUNT(ipi_send);
         if ( copy_from_guest(&send, arg, 1) != 0 )
             return -EFAULT;
         rc = evtchn_send(current->domain, send.port);
+        if (BIGOS_IS_ACCOUNTING(ipi_send))
+            BIGOS_STOP_ACCOUNT(ipi_send);
         break;
     }
 

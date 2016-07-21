@@ -17,6 +17,7 @@
 #include <xen/nmi.h>
 #include <xen/guest_access.h>
 #include <xen/hypercall.h>
+#include <xen/account.h>
 #include <asm/current.h>
 #include <asm/msr.h>
 #include <public/nmi.h>
@@ -248,6 +249,7 @@ extern unsigned int domain_allocation_max_order;
 
 #ifdef BIGOS_MEMORY_STATS
 #  define HYPERCALL_BIGOS_MEMSTATS      -11
+#  define HYPERCALL_BIGOS_VMESTATS      -20
 #endif
 
 #ifdef BIGOS_CARREFOUR
@@ -303,6 +305,21 @@ static void bigos_wrmsr(void *args)
     *slot = old;
 }
 
+#  endif
+#endif
+
+
+#ifdef BIGOS_MEMORY_STATS
+#  ifndef COMPAT
+DEFINE_PER_CPU(unsigned long, vmexit_count[0x403]);
+DEFINE_PER_CPU(unsigned long, vmexit_nanosec[0x403]);
+
+DEFINE_BIGOS_PROBE(ipi);
+DEFINE_BIGOS_PROBE(ipi_total);
+DEFINE_BIGOS_PROBE(ipi_send);
+DEFINE_BIGOS_PROBE(ipi_pending);
+DEFINE_BIGOS_PROBE(ipi_lock);
+DEFINE_BIGOS_PROBE(ipi_xsm);
 #  endif
 #endif
 
@@ -793,6 +810,43 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     err:
         return -1;
     }
+
+#  ifndef COMPAT
+    case HYPERCALL_BIGOS_VMESTATS:
+    {
+        int cpu;
+        unsigned long i;
+        unsigned long count_sum, ns_sum;
+        unsigned long count_total = 0, ns_total = 0;
+
+        for (i=0; i<0x403; i++) {
+            count_sum = 0;
+            ns_sum = 0;
+            
+            for_each_online_cpu ( cpu ) {
+                count_sum += per_cpu(vmexit_count[i], cpu);
+                ns_sum += per_cpu(vmexit_nanosec[i], cpu);
+            }
+
+            if (count_sum == 0)
+                continue;
+            
+            count_total += count_sum;
+            ns_total += ns_sum;
+            printk("VMEXIT 0x%03lx :: %-7lu (%lu ns)\n", i, count_sum, ns_sum);
+
+            for_each_online_cpu ( cpu ) {
+                printk("    CORE[%02d] :: %-7lu (%lu ns)\n", cpu,
+                       per_cpu(vmexit_count[i], cpu),
+                       per_cpu(vmexit_nanosec[i], cpu));
+                per_cpu(vmexit_count[i], cpu) = 0;
+                per_cpu(vmexit_nanosec[i], cpu) = 0;
+            }
+        }
+
+        return 0;
+    }
+#  endif
 #endif /* BIGOS_MEMORY_STATS */
 #ifdef BIGOS_CARREFOUR
     case HYPERCALL_BIGOS_CFR_INIT:

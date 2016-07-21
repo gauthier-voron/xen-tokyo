@@ -24,13 +24,17 @@ install: $(TARGS_INSTALL)
 
 .PHONY: build
 build:
-	$(MAKE) -C xen build
-	$(MAKE) -C tools build
-	$(MAKE) -C stubdom build
+	$(call cmd-print,  MAKE    xen)
+	$(Q)$(MAKE) -C xen build
+	$(call cmd-print,  MAKE    build)
+	$(Q)$(MAKE) -C tools build
+	$(call cmd-print,  MAKE    stubdom)
+	$(Q)$(MAKE) -C stubdom build
 ifeq (x86_64,$(XEN_TARGET_ARCH))
-	XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom pv-grub
+	$(Q)XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom pv-grub
 endif
-	$(MAKE) -C docs build
+	$(call cmd-print,  MAKE    docs)
+	$(Q)$(MAKE) -C docs build
 
 # The test target is for unit tests that can run without an installation.  Of
 # course, many tests require a machine running Xen itself, and these are

@@ -82,7 +82,6 @@ static void handle_ibs_nmi(const struct ibs_record *record,
     if ( gfn == INVALID_GFN )
         goto end;
 
-
     ((struct ibs_record *) record)->data_linear_address = gfn << PAGE_SHIFT;
 
     if ( record->data_physical_address == 0 )
@@ -145,9 +144,13 @@ void carrefour_ibs_start() {
         memset(&per_cpu(stats, cpu), 0, sizeof(per_cpu(stats, cpu)));
 
     ibs_setevent(IBS_EVENT_OP);
-    if ( prevrate != sampling_rate )
-        ibs_setrate(sampling_rate, IBS_RATE_IPS);
-    prevrate = sampling_rate;
+    if ( carrefour_module_options[AUTOSTAB_SAMPLING].value ) {
+        if ( prevrate != sampling_rate )
+            ibs_setrate(sampling_rate, IBS_RATE_IPS);
+        prevrate = sampling_rate;
+    } else {
+        ibs_setrate(sampling_rate, IBS_RATE_RAW);
+    }
     ibs_enable();
 }
 
@@ -163,6 +166,9 @@ int carrefour_ibs_stop() {
 	   total_samples += per_cpu(stats, cpu).total_samples;
 	   total_samples_L3DRAM += per_cpu(stats, cpu).total_samples_L3DRAM;
 	   run_stats.time_spent_in_NMI += per_cpu(stats, cpu).time_spent_in_NMI;
+
+       per_cpu(core_run_stats, cpu).time_spent_in_NMI
+           += per_cpu(stats, cpu).time_spent_in_NMI;
    }
 
    printu("Sampling: %lx op=%d considering L1&L2=%d\n", sampling_rate, carrefour_module_options[IBS_INSTRUCTION_BASED].value, carrefour_module_options[IBS_CONSIDER_CACHES].value);

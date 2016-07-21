@@ -28,7 +28,8 @@ enum carrefour_available_options {
    DETAILED_STATS,
 
    // Related to IBS
-   ADAPTIVE_SAMPLING, 
+   ADAPTIVE_SAMPLING,
+   AUTOSTAB_SAMPLING,
    IBS_RATE_ACCURATE,
    IBS_RATE_CHEAP,
    IBS_RATE_NO_ADAPTIVE,

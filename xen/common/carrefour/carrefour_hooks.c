@@ -10,6 +10,12 @@
 
 struct carrefour_hook_stats_t carrefour_hook_stats;
 
+/* quick test - remove */
+int movelog_domains[8];
+int movelog_source;
+unsigned long movelog[8][8][8];
+
+
 
 int s_migrate_pages(int domain, unsigned long nr_pages, void ** pages,
                     int * nodes, int throttle) {
@@ -23,12 +29,33 @@ int s_migrate_pages(int domain, unsigned long nr_pages, void ** pages,
         gfn = addr >> PAGE_SHIFT;
 
         memory_move(d, gfn, nodes[i], 0);
+
+        /* quick test - remove */
+        {
+            int id;
+            int bridge = smp_processor_id() / 8;
+
+            for (id=0; i<8; id++)
+                if (movelog_domains[id] == domain)
+                    break;
+                else if (movelog_domains[id] == 0) {
+                    movelog_domains[id] = domain;
+                    break;
+                }
+
+            if (id < 8) {
+                movelog[id][movelog_source][bridge]++;
+                movelog[id][bridge][nodes[i]]++;
+                /* movelog[id][movelog_source][nodes[i]]++; */
+            }
+        }
     }
 
     put_domain(d);
 
     end = NOW();
     run_stats.time_spent_in_migration += end - start;
+    this_cpu(core_run_stats).time_spent_in_migration += end - start;
 
     return 0;
 }

@@ -11,6 +11,7 @@ frame_pointer ?= n
 lto           ?= n
 
 include $(XEN_ROOT)/Config.mk
+include $(XEN_ROOT)/Commands.mk
 
 # Hardcoded configuration implications and dependencies.
 # Do this is a neater way if it becomes unwieldy.
@@ -28,21 +29,6 @@ endif
 override TARGET_SUBARCH  := $(XEN_TARGET_ARCH)
 override TARGET_ARCH     := $(shell echo $(XEN_TARGET_ARCH) | \
                               sed -e 's/x86.*/x86/' -e s'/arm\(32\|64\)/arm/g')
-
-# Compilation Verbosity
-V ?= 1
-
-ifeq ($(V),1)
-  define cmd-print
-    @echo '$1'
-  endef
-endif
-
-ifneq ($(V),2)
-  GNUMAKEFLAGS += --no-print-directory
-  Q := @
-endif
-
 
 TARGET := $(BASEDIR)/xen
 
@@ -146,7 +132,8 @@ ifeq ($(obj-y),)
 	$(Q)$(CC) $(CFLAGS) -c -x c /dev/null -o $@
 else
 ifeq ($(lto),y)
-	$(LD_LTO) -r -o $@ $^
+	$(call cmd-print,  LDLTO   $@)
+	$(Q)$(LD_LTO) -r -o $@ $^
 else
 	$(call cmd-print,  LD      $@)
 	$(Q)$(LD) $(LDFLAGS) -r -o $@ $^
@@ -155,9 +142,11 @@ endif
 
 built_in_bin.o: $(obj-bin-y)
 ifeq ($(obj-bin-y),)
-	$(CC) $(AFLAGS) -c -x assembler /dev/null -o $@
+	$(call cmd-print,  CC      $@)
+	$(Q)$(CC) $(AFLAGS) -c -x assembler /dev/null -o $@
 else
-	$(LD) $(LDFLAGS) -r -o $@ $^
+	$(call cmd-print,  LD      $@)
+	$(Q)$(LD) $(LDFLAGS) -r -o $@ $^
 endif
 
 # Force execution of pattern rules (for which PHONY cannot be directly used).
@@ -174,7 +163,7 @@ FORCE:
 
 .PHONY: clean
 clean:: $(addprefix _clean_, $(subdir-all))
-	rm -f *.o *~ core $(DEPS)
+	$(Q)rm -f *.o *~ core $(DEPS)
 _clean_%/: FORCE
 	$(call cmd-print,  MAKE    $*)
 	$(Q)$(MAKE) -f $(BASEDIR)/Rules.mk -C $* clean
@@ -191,7 +180,9 @@ SPECIAL_DATA_SECTIONS := rodata $(foreach n,1 2 4 8,rodata.str1.$(n)) \
 			 $(foreach r,rel rel.ro,data.$(r).local)
 
 $(filter %.init.o,$(obj-y) $(obj-bin-y) $(extra-y)): %.init.o: %.o Makefile
-	$(OBJDUMP) -h $< | sed -n '/[0-9]/{s,00*,0,g;p;}' | while read idx name sz rest; do \
+	$(call cmd-print,  OBJCPY  $@)
+	$(Q)$(OBJDUMP) -h $< | sed -n '/[0-9]/{s,00*,0,g;p;}' \
+        | while read idx name sz rest; do \
 		case "$$name" in \
 		.*.local) ;; \
 		.text|.text.*|.data|.data.*|.bss) \
@@ -200,7 +191,8 @@ $(filter %.init.o,$(obj-y) $(obj-bin-y) $(extra-y)): %.init.o: %.o Makefile
 			exit $$(expr $$idx + 1);; \
 		esac; \
 	done
-	$(OBJCOPY) $(foreach s,$(SPECIAL_DATA_SECTIONS),--rename-section .$(s)=.init.$(s)) $< $@
+	$(Q)$(OBJCOPY) $(foreach s,$(SPECIAL_DATA_SECTIONS),--rename-section \
+            .$(s)=.init.$(s)) $< $@
 
 %.i: %.c Makefile
 	$(CPP) $(CFLAGS) $< -o $@

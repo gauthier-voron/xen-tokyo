@@ -738,6 +738,22 @@ static inline int get_ibs_decision(double hwc_lar) {
 }
 
 
+static inline void move_to_next_cpu(void)
+{
+	static long current_cpu = 0;
+	static long online_cpu_count = 0;
+	cpu_set_t set;
+
+	if (online_cpu_count == 0)
+		online_cpu_count = sysconf(_SC_NPROCESSORS_ONLN);
+	current_cpu = (current_cpu + 1) % online_cpu_count;
+
+	CPU_ZERO(&set);
+	CPU_SET(current_cpu, &set);
+	sched_setaffinity(getpid(), sizeof (set), &set);
+}
+
+
 static inline int get_nr_thp() {
    FILE *procs = fopen("/proc/vmstat", "r");
    char *line = NULL;
@@ -1057,6 +1073,7 @@ static void thread_loop() {
       memcpy(&previous_hwc_feedback, &hwc_feedback, sizeof(struct hwc_feedback_t));
 
       logical_time++;
+      move_to_next_cpu();
    }
 
    return;

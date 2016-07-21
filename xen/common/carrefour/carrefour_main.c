@@ -172,9 +172,6 @@ int start_profiling(void) {
 /** And when stoping profiling         **/
 /** Must be called with NMI disabled   **/
 int stop_profiling(void) {
-   u64 time_before_stop_profiling, time_after_stop_profiling;
-   rdtscll(time_before_stop_profiling);
-   
    //rbtree_print(); //debug
    //show_tid_sharing_map(); //debug
 
@@ -213,29 +210,6 @@ int stop_profiling(void) {
    /** free all memory **/
    rbtree_clean();
    carrefour_clean();
-
-   rdtscll(time_after_stop_profiling);
-   if(num_online_cpus() > 0 && (time_after_stop_profiling - time_start_profiling > 0)) {
-      unsigned long total_time = time_after_stop_profiling - time_start_profiling;
-      unsigned long stop_profiling_time = time_after_stop_profiling - time_before_stop_profiling;
-
-      printu("-- Carrefour %lu total profiling time, %lu stop_profiling, %lu in NMI - Overhead master core %d%%, average overhead %d%%\n",
-            (unsigned long) total_time,
-            (unsigned long) stop_profiling_time,
-            (unsigned long) run_stats.time_spent_in_NMI,
-            (int)(stop_profiling_time * 100 / total_time),
-            (int)((run_stats.time_spent_in_NMI / num_online_cpus()) * 100 / total_time)
-            );
-
-      printu("-- Carrefour %lu total migration time, migration overhead (%d%%)\n",
-            (unsigned long) run_stats.time_spent_in_migration,
-            (int) (run_stats.time_spent_in_migration * 100 / (time_after_stop_profiling - time_start_profiling))
-            );
-
-   }
-
-   printu("Current core is %d\n", smp_processor_id());
-
    return 0;
 }
 
@@ -247,8 +221,13 @@ extern unsigned long max_lin_address;
 
 extern struct carrefour_global_stats global_stats;
 
+/* quick test - remove */
+#include <xen/sched.h>
+extern unsigned long movelog[8][8][8];
+extern int movelog_domains[8];
+
 int carrefour_init_module(void) {
-   int err;
+   int cpu, err;
    struct carrefour_options_t options;
 
    if ( loaded )
@@ -265,7 +244,6 @@ int carrefour_init_module(void) {
    printk("TNO   = Total nr of orders\n"); 
    printk("TNSIT = Total number samples in the tree\n"); 
    printk("TNSM  = Total number sample missed\n"); 
-
 
    // Module options
    if(! validate_module_options()) {
@@ -289,6 +267,21 @@ int carrefour_init_module(void) {
    printk("reset_carrefour_hooks();\n");
 
    memset(&options, 0, sizeof(struct carrefour_options_t));
+   memset(&run_stats, 0, sizeof(run_stats));
+   for_each_online_cpu ( cpu )
+       memset(&per_cpu(core_run_stats, cpu), 0,
+              sizeof(struct carrefour_run_stats));
+
+   /* quick test - remove */
+   {
+       int x, y, z;
+       for (x=0; x<8; x++)
+           for (y=0; y<8; y++)
+               for (z=0; z<8; z++)
+                   movelog[x][y][z] = 0;
+       memset(movelog_domains, 0, sizeof (movelog_domains));
+   }
+
    options.page_bouncing_fix_4k = carrefour_module_options[PAGE_BOUNCING_FIX_4K].value;
    options.page_bouncing_fix_2M = carrefour_module_options[PAGE_BOUNCING_FIX_2M].value;
    options.async_4k_migrations  = 1;
@@ -300,6 +293,8 @@ int carrefour_init_module(void) {
 }
 
 void carrefour_exit_module(void) {
+    int cpu;
+    
     if ( !loaded )
         return;
     loaded = 0;
@@ -309,7 +304,96 @@ void carrefour_exit_module(void) {
 
     rbtree_remove_module();
 
-    printk("sdp: shutdown\n");
+    printk("Carrefour - profiling time = %lu %03lu %03lu %03lu ns\n",
+           (run_stats.time_spent_in_profiling) / 1000000000ul,
+           ((run_stats.time_spent_in_profiling) / 1000000) % 1000,
+           ((run_stats.time_spent_in_profiling) / 1000ul) % 1000,
+           (run_stats.time_spent_in_profiling) % 1000);
+    for_each_online_cpu ( cpu )
+        printk("              [CPU %2d]     = %lu %03lu %03lu %03lu ns\n",
+               cpu, (per_cpu(core_run_stats, cpu).time_spent_in_profiling)
+               / 1000000000ul,
+               ((per_cpu(core_run_stats, cpu).time_spent_in_profiling)
+                / 1000000) % 1000,
+               ((per_cpu(core_run_stats, cpu).time_spent_in_profiling)
+                / 1000ul) % 1000,
+               (per_cpu(core_run_stats, cpu).time_spent_in_profiling)
+               % 1000);
+    
+    printk("            migration time = %lu %03lu %03lu %03lu ns\n",
+           (run_stats.time_spent_in_migration) / 1000000000ul,
+           ((run_stats.time_spent_in_migration) / 1000000) % 1000,
+           ((run_stats.time_spent_in_migration) / 1000ul) % 1000,
+           (run_stats.time_spent_in_migration) % 1000);
+    for_each_online_cpu ( cpu )
+        printk("              [CPU %2d]     = %lu %03lu %03lu %03lu ns\n",
+               cpu, (per_cpu(core_run_stats, cpu).time_spent_in_migration)
+               / 1000000000ul,
+               ((per_cpu(core_run_stats, cpu).time_spent_in_migration)
+                / 1000000) % 1000,
+               ((per_cpu(core_run_stats, cpu).time_spent_in_migration)
+                / 1000ul) % 1000,
+               (per_cpu(core_run_stats, cpu).time_spent_in_migration)
+               % 1000);
+    
+    printk("            NMI time       = %lu %03lu %03lu %03lu ns\n",
+           (run_stats.time_spent_in_NMI) / 1000000000ul,
+           ((run_stats.time_spent_in_NMI) / 1000000) % 1000,
+           ((run_stats.time_spent_in_NMI) / 1000ul) % 1000,
+           (run_stats.time_spent_in_NMI) % 1000);
+    for_each_online_cpu ( cpu )
+        printk("              [CPU %2d]     = %lu %03lu %03lu %03lu ns\n",
+               cpu, (per_cpu(core_run_stats, cpu).time_spent_in_NMI)
+               / 1000000000ul,
+               ((per_cpu(core_run_stats, cpu).time_spent_in_NMI)
+                / 1000000) % 1000,
+               ((per_cpu(core_run_stats, cpu).time_spent_in_NMI)
+                / 1000ul) % 1000,
+               (per_cpu(core_run_stats, cpu).time_spent_in_NMI) % 1000);
+
+    /* quick test - remove */
+    {
+    /*     unsigned long node, cnt; */
+    /*     int i; */
+        unsigned long cnt;
+        int src, dest, id;
+        
+        printk("Carrefour - migration profile\n");
+
+        for (src=0; src<8; src++) {
+            printk("    [NODE %d] :      0      1      2      3      4      "
+                   "5      6      7\n", src);
+
+            for (id=0; id<8; id++) {
+                cnt = 0;
+                for (dest=0; dest<8; dest++)
+                    cnt += movelog[id][src][dest];
+                if (cnt == 0)
+                    continue;
+
+                printk("     DOM %2d  :", movelog_domains[id]);
+                for (dest=0; dest<8; dest++)
+                    printk(" %6lu", movelog[id][src][dest]);
+                printk(" => %lu\n", cnt);
+            }
+        }
+        
+    /*     for_each_online_cpu ( cpu ) { */
+    /*         printk("    [CPU %2d] --     0     1     2     3     4     " */
+    /*                "5     6     7\n", cpu); */
+    /*         for (i=0; i<8; i++) { */
+    /*             cnt = 0; */
+    /*             for (node=0; node<8; node++) */
+    /*                 cnt += per_cpu(movelog, cpu)[i * 8 + node]; */
+    /*             if (cnt == 0) */
+    /*                 continue; */
+    /*             printk("     dom %2d  --", movelog_offset + i); */
+    /*             for (node=0; node<8; node++) */
+    /*                 printk(" %5lu", per_cpu(movelog, cpu)[i * 8 + node]); */
+    /*             printk("\n"); */
+    /*         } */
+    /*     } */
+    }
 }
 
 /*

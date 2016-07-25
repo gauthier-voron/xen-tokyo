@@ -413,9 +413,8 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 
 struct remap_facility
 {
-	spinlock_t remapping_lock;
-	struct rb_root unmap_gfn_tree;
-	struct list_head unmap_mfn_list[MAX_NUMNODES];
+	spinlock_t     lock;
+	struct rb_root tree;
 };
 
 struct remap_facility *alloc_remap_facility(void);
@@ -427,13 +426,6 @@ struct unmap_gfn
 {
 	struct rb_node node;
 	unsigned long  gfn;
-	unsigned long  _mfn;
-};
-
-struct unmap_mfn
-{
-	struct list_head list;
-	unsigned long    mfn;
 };
 
 

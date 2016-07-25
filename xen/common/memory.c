@@ -1217,93 +1217,34 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 struct remap_facility *alloc_remap_facility(void)
 {
     struct remap_facility *ptr = xmalloc(struct remap_facility);
-    int i;
 
     if (ptr == NULL)
         return ptr;
     
-    spin_lock_init(&ptr->remapping_lock);
-    
-    ptr->unmap_gfn_tree = RB_ROOT;
-    
-    for (i=0; i<MAX_NUMNODES; i++)
-        INIT_LIST_HEAD(&ptr->unmap_mfn_list[i]);
+    spin_lock_init(&ptr->lock);
+    ptr->tree = RB_ROOT;
 
     return ptr;
 }
 
 void free_remap_facility(struct remap_facility *ptr)
 {
-    struct list_head *list, *entry;
     struct rb_node *node;
-    int i;
 
-    node = rb_first(&ptr->unmap_gfn_tree);
+    node = rb_first(&ptr->tree);
     while (node) {
-        rb_erase(node, &ptr->unmap_gfn_tree);
+        rb_erase(node, &ptr->tree);
         xfree(container_of(node, struct unmap_gfn, node));
-        node = rb_first(&ptr->unmap_gfn_tree);
+        node = rb_first(&ptr->tree);
     }
     
-    for (i=0; i<MAX_NUMNODES; i++) {
-        list = &ptr->unmap_mfn_list[i];
-        while (!list_empty(list)) {
-            entry = list->next;
-            list_del(entry);
-            xfree(container_of(entry, struct unmap_mfn, list));
-        }
-    }
-        
     xfree(ptr);
 }
 
 
-static int __unmap_mfn(struct domain *d, unsigned long mfn)
-{
-    struct unmap_mfn *new = xmalloc(struct unmap_mfn);
-    int node = phys_to_nid(mfn << PAGE_SHIFT);
-
-    if (new == NULL)
-        return -1;
-
-    new->mfn = mfn;
-    list_add(&new->list, &d->remap->unmap_mfn_list[node]);
-
-    return 0;
-}
-
-/* static unsigned long __remap_mfn(struct domain *d, int node) */
-/* { */
-/*     struct unmap_mfn *del = NULL; */
-/*     struct list_head *list, *entry; */
-/*     unsigned long mfn; */
-/*     int from = node; */
-
-/*     do { */
-/*         list = &d->remap->unmap_mfn_list[from]; */
-
-/*         if (!list_empty(list)) { */
-/*             entry = list->next; */
-/*             list_del(entry); */
-/*             del = container_of(entry, struct unmap_mfn, list); */
-/*             break; */
-/*         } */
-        
-/*         from = (from + 1) % MAX_NUMNODES; */
-/*     } while (from != node); */
-
-/*     ASSERT(del != NULL); */
-
-/*     mfn = del->mfn; */
-/*     xfree(del); */
-
-/*     return mfn; */
-/* } */
-
-
 static struct unmap_gfn *__find_gfn(struct domain *d, unsigned long gfn)
 {
-    struct rb_node *node = d->remap->unmap_gfn_tree.rb_node;
+    struct rb_node *node = d->remap->tree.rb_node;
     struct unmap_gfn *data = NULL;
 
     while (node) {
@@ -1322,9 +1263,9 @@ static struct unmap_gfn *__find_gfn(struct domain *d, unsigned long gfn)
 }
 
 static int __unmap_gfn(struct domain *d, unsigned long gfn,
-                       struct unmap_gfn *hint, unsigned long _mfn)
+                       struct unmap_gfn *hint)
 {
-    struct rb_node **new = &(d->remap->unmap_gfn_tree.rb_node), *parent = NULL;
+    struct rb_node **new = &(d->remap->tree.rb_node), *parent = NULL;
     struct unmap_gfn *data;
     
     if (hint == NULL)
@@ -1346,10 +1287,9 @@ static int __unmap_gfn(struct domain *d, unsigned long gfn,
         return -1;
 
     data->gfn = gfn;
-    data->_mfn = _mfn;
 
     rb_link_node(&data->node, parent, new);
-    rb_insert_color(&data->node, &d->remap->unmap_gfn_tree);
+    rb_insert_color(&data->node, &d->remap->tree);
     return 1;
 }
 
@@ -1362,7 +1302,7 @@ static int __remap_gfn(struct domain *d, unsigned long gfn,
     if (hint == NULL || hint->gfn != gfn)
         return 0;
 
-    rb_erase(&hint->node, &d->remap->unmap_gfn_tree);
+    rb_erase(&hint->node, &d->remap->tree);
     xfree(hint);
     return 1;
 }
@@ -1372,33 +1312,29 @@ int memory_unmap(struct domain *d, unsigned long gfn, unsigned int order)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
     struct page_info *page;
-    unsigned long mfn, _gfn;
-    int node, ret;
+    unsigned long mfn;
+    int ret;
 
-    spin_lock(&d->remap->remapping_lock);
+    spin_lock(&d->remap->lock);
 
-    for ( _gfn = gfn ; _gfn < (gfn + (1 << order)) ; _gfn++) {
-        page = __memory_move_steal(d, _gfn);
-        if ( unlikely(page == NULL) )
-            continue;
+    page = __memory_move_steal(d, gfn);
+    if ( unlikely(page == NULL) )
+        goto unlock;
         
-        mfn = page_to_mfn(page);
-        node = phys_to_nid(mfn << PAGE_SHIFT);
+    ret = __unmap_gfn(d, gfn, NULL);
+    if (ret != 1)
+        goto assign;
 
-        ret = __unmap_gfn(d, gfn, NULL, mfn);
-        if (ret != 1)
-            goto next;
+    mfn = page_to_mfn(page);
+    p2m->set_entry(p2m, gfn, _mfn(mfn), 0, p2m_ram_ro, p2m_access_rw);
 
-        __unmap_mfn(d, mfn);
-        p2m->set_entry(p2m, gfn, _mfn(mfn), 0, p2m_ram_ro, p2m_access_rw);
+assign:
+    if ( assign_pages(d, page, 0, MEMF_no_refcount) )
+        BUG();
+    put_gfn(d, gfn);
 
-    next:
-        if ( assign_pages(d, page, 0, MEMF_no_refcount) )
-            BUG();
-        put_gfn(d, _gfn);
-    }
-
-    spin_unlock(&d->remap->remapping_lock);
+unlock:
+    spin_unlock(&d->remap->lock);
 
     return 0;
 }
@@ -1475,28 +1411,23 @@ static void __memory_ft(struct domain *d, unsigned long gfn,
 
 int memory_remap(struct domain *d, unsigned long gfn)
 {
-    /* struct p2m_domain *p2m = p2m_get_hostp2m(d); */
     struct unmap_gfn *found;
-    /* unsigned long mfn; */
-    unsigned long start0, start1;
     int node, ret = 0;
 
-    spin_lock(&d->remap->remapping_lock);
+    spin_lock(&d->remap->lock);
 
     found = __find_gfn(d, gfn);
     if ( found == NULL || found->gfn != gfn )
         goto out;
 
     node = vcpu_to_node(current);
-    /* mfn = __remap_mfn(d, node); */
-    
     __memory_ft(d, gfn, node);
     
     __remap_gfn(d, gfn, found);
 
     ret = 1;
 out:
-    spin_unlock(&d->remap->remapping_lock);
+    spin_unlock(&d->remap->lock);
     
     return ret;
 }

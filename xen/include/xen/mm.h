@@ -31,6 +31,8 @@
 #include <xen/types.h>
 #include <xen/list.h>
 #include <xen/spinlock.h>
+#include <xen/rbtree.h>
+#include <xen/numa.h>
 
 struct domain;
 struct page_info;
@@ -407,6 +409,38 @@ void clear_memory_moved_gfn(void);
  */
 unsigned long memory_move(struct domain *d, unsigned long gfn,
 			  unsigned long node, int flags);
+
+
+struct remap_facility
+{
+	spinlock_t remapping_lock;
+	struct rb_root unmap_gfn_tree;
+	struct list_head unmap_mfn_list[MAX_NUMNODES];
+};
+
+struct remap_facility *alloc_remap_facility(void);
+
+void free_remap_facility(struct remap_facility *ptr);
+
+
+struct unmap_gfn
+{
+	struct rb_node node;
+	unsigned long  gfn;
+	unsigned long  _mfn;
+};
+
+struct unmap_mfn
+{
+	struct list_head list;
+	unsigned long    mfn;
+};
+
+
+int memory_unmap(struct domain *d, unsigned long gfn, unsigned int order);
+
+int memory_remap(struct domain *d, unsigned long gfn);
+
 
 #define MEMORY_MOVE_FORCE    (1ul << 0)
 

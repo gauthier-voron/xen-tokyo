@@ -347,6 +347,10 @@ struct domain *domain_create(
         d->pbuf = xzalloc_array(char, DOMAIN_PBUF_SIZE);
         if ( !d->pbuf )
             goto fail;
+
+        d->remap = alloc_remap_facility();
+        if ( !d->remap )
+            goto fail;
     }
 
     if ( (err = arch_domain_create(d, domcr_flags)) != 0 )
@@ -800,6 +804,7 @@ static void complete_domain_destroy(struct rcu_head *head)
 
     xfree(d->mem_event);
     xfree(d->pbuf);
+    free_remap_facility(d->remap);
 
     for ( i = d->max_vcpus - 1; i >= 0; i-- )
         if ( (v = d->vcpu[i]) != NULL )

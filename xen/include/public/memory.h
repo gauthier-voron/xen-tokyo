@@ -521,6 +521,9 @@ DEFINE_XEN_GUEST_HANDLE(xen_mem_sharing_op_t);
  * The zero value is appropiate.
  */
 
+#define XENMEM_unmap_page                   42
+
+
 #endif /* defined(__XEN__) || defined(__XEN_TOOLS__) */
 
 /* Next available subop number is 26 */

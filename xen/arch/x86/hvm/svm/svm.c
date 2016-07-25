@@ -1407,6 +1407,8 @@ static void svm_do_nested_pgfault(struct vcpu *v,
 #ifdef BIGOS_MEMORY_MOVE
     if ( is_memory_moved_gfn(v->domain, gfn, 1) )
         return;
+    if ( memory_remap(v->domain, gfn) )
+        return;
 #endif
 
     ret = hvm_hap_nested_page_fault(gpa, 0, ~0ul, 

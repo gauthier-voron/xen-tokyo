@@ -4621,9 +4621,17 @@ static long hvm_grant_table_op(
     return do_grant_table_op(cmd, uop, count);
 }
 
+
+struct xen_unmap_page
+{
+    unsigned long gfn;
+    unsigned int order;
+};
+
 static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     long rc;
+    struct xen_unmap_page unmap;
 
     switch ( cmd & MEMOP_CMD_MASK )
     {
@@ -4635,6 +4643,12 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         rc = do_memory_op(cmd, arg);
         current->domain->arch.hvm_domain.qemu_mapcache_invalidate = 1;
         return rc;
+    case XENMEM_unmap_page:
+        if ( copy_from_guest(&unmap, arg, 1) )
+            return -1;
+        else
+            return memory_unmap(current->domain, unmap.gfn, unmap.order);
+        break;
     }
     return do_memory_op(cmd, arg);
 }

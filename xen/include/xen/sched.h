@@ -454,7 +454,7 @@ struct domain
     spinlock_t node_affinity_lock;
 
     /* BIGOS => First-Touch */
-    struct remap_facility *remap;
+    struct realloc_facility *realloc;
 };
 
 struct domain_setup_info

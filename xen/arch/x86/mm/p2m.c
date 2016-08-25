@@ -237,6 +237,22 @@ void p2m_memory_type_changed(struct domain *d)
     }
 }
 
+
+/*
+ * BIGOS: if you say you lock a single gfn, lock the fucking gfn and not the
+ * entire page table, otherwise, just admit you put a fucking giant lock !
+ */
+void raw_p2m_lock(struct p2m_domain *p2m)
+{
+    p2m_lock(p2m);
+}
+
+void raw_p2m_unlock(struct p2m_domain *p2m)
+{
+    p2m_unlock(p2m);
+}
+
+
 mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn,
                     p2m_type_t *t, p2m_access_t *a, p2m_query_t q,
                     unsigned int *page_order, bool_t locked)
@@ -1153,9 +1169,19 @@ void p2m_mem_paging_populate(struct domain *d, unsigned long gfn)
     p2m_access_t a;
     mfn_t mfn;
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    int rc;
+
+    /* Check if it is first-touch paging */
+    if ( remap_realloc_now(d, gfn, 0) )
+        return;
 
     /* We're paging. There should be a ring */
-    int rc = mem_event_claim_slot(d, &d->mem_event->paging);
+    rc = mem_event_claim_slot(d, &d->mem_event->paging);
+
+    /* BIGOS TODO remove this quickfix and make a real synchro */
+    if ( rc == -ENOSYS )
+        return;
+
     if ( rc == -ENOSYS )
     {
         gdprintk(XENLOG_ERR, "Domain %hu paging gfn %lx yet no ring "

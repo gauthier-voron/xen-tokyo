@@ -521,7 +521,14 @@ DEFINE_XEN_GUEST_HANDLE(xen_mem_sharing_op_t);
  * The zero value is appropiate.
  */
 
-#define XENMEM_unmap_page                   42
+#define XENMEM_page_mapping             42
+#define XENMEM_page_mapping_unmap        0
+#define XENMEM_page_mapping_remap        1
+struct xen_page_mapping {
+    unsigned long gfn;
+    unsigned int order;
+    unsigned int operation;
+};
 
 
 #endif /* defined(__XEN__) || defined(__XEN_TOOLS__) */

@@ -399,6 +399,8 @@ void set_memory_moved_gfns(struct domain *d, unsigned long *gfns,
  */
 void clear_memory_moved_gfn(void);
 
+#define MEMORY_MOVE_FORCE    (1ul << 0)
+
 /*
  * Move, for a specified domain, the pages with the given gfn to the specified
  * nodes. The move can be done concurrently with other operations.
@@ -411,30 +413,107 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 			  unsigned long node, int flags);
 
 
-struct remap_facility
+#define REALLOC_POOL_ORDER        7
+#define REALLOC_POOL_SIZE        (1ul << REALLOC_POOL_ORDER)
+
+#define REALLOC_APPLY_TRIGGER     32
+
+#define REALLOC_BATCH_SPIN_NS     25000
+#define REALLOC_BATCH_SPIN_COUNT  10
+
+#define REALLOC_MAX_WARNING       20
+
+struct realloc_facility
 {
-	spinlock_t     lock;
-	struct rb_root tree;
+	int                warning;
+	
+	struct rb_root     token_tree;
+	rwlock_t           token_tree_lock;
+
+	struct list_head   remap_bucket[NR_CPUS];
+	spinlock_t         remap_bucket_lock[NR_CPUS];
+	
+	struct page_info  *page_pool[MAX_NUMNODES][REALLOC_POOL_SIZE];
+	unsigned long      page_pool_size[MAX_NUMNODES];
+
+	unsigned long      apply_query;
+	unsigned long      apply_done;
+	unsigned long      apply_running;
 };
 
-struct remap_facility *alloc_remap_facility(void);
+struct realloc_facility *alloc_realloc_facility(void);
 
-void free_remap_facility(struct remap_facility *ptr);
+void free_realloc_facility(struct realloc_facility *ptr);
 
 
-struct unmap_gfn
+#define REALLOC_STATE_MAP   0
+#define REALLOC_STATE_UNMAP 1
+#define REALLOC_STATE_DELAY 2
+#define REALLOC_STATE_BUSY  3
+
+struct realloc_token
 {
-	struct rb_node node;
-	unsigned long  gfn;
+	unsigned long     gfn;
+	unsigned long     mfn;
+	int               copy;
+	unsigned int      type;
+	unsigned int      access;
+	int               state;
+	int               node;
+	struct rb_node    token_node;
+	struct list_head  bucket_cell;
 };
 
+/*
+ * Find the realloc token with the given gfn.
+ * Return the token if present, NULL otherwise.
+ */
+struct realloc_token *find_realloc_token(struct realloc_facility *f,
+					 unsigned long gfn);
 
-int memory_unmap(struct domain *d, unsigned long gfn, unsigned int order);
+/* 
+ * Insert t in the token_tree of f, with the hint h (may be NULL).
+ * Return 0 on success, -1 if the token was already present.
+ */
+int insert_realloc_token(struct realloc_facility *f, struct realloc_token *t,
+			 struct realloc_token *h);
 
-int memory_remap(struct domain *d, unsigned long gfn);
+/* Return 0 on success, -1 if the token was not present. */
+int remove_realloc_token(struct realloc_facility *f, struct realloc_token *t);
 
 
-#define MEMORY_MOVE_FORCE    (1ul << 0)
+/*
+ * Register the given gfn with given size order for being reallocatable.
+ * Return the amount of 0-order pages registered successfully.
+ */
+unsigned long register_for_realloc(struct domain *d, unsigned long gfn,
+				   unsigned int order);
+
+/*
+ * Unmap the given gfn with the given order making it ready for further
+ * reallocation.
+ * Return the amount of 0-order pages unmapped successfully.
+ */
+unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
+			    unsigned int order);
+
+/*
+ * Prepare to remap the given gfn with the given order making it available
+ * to the guest. The reallocation is done lazily in batch.
+ * Use the apply_realloc_gfn() function to force remapping.
+ * Return the amount of 0-order pages prepared successfully.
+ */
+unsigned long remap_realloc(struct domain *d, unsigned long gfn,
+			    unsigned int order);
+
+unsigned long apply_realloc(struct domain *d);
+
+unsigned long remap_realloc_now(struct domain *d, unsigned long gfn,
+				unsigned int order);
+
+
+void remap_all_pages(struct domain *d);
+
 
 #endif
 

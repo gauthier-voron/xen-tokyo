@@ -74,6 +74,8 @@ static void __domain_finalise_shutdown(struct domain *d)
 {
     struct vcpu *v;
 
+    remap_all_pages(d);
+
     BUG_ON(!spin_is_locked(&d->shutdown_lock));
 
     if ( d->is_shut_down )
@@ -348,8 +350,8 @@ struct domain *domain_create(
         if ( !d->pbuf )
             goto fail;
 
-        d->remap = alloc_remap_facility();
-        if ( !d->remap )
+        d->realloc = alloc_realloc_facility();
+        if ( !d->realloc )
             goto fail;
     }
 
@@ -804,7 +806,7 @@ static void complete_domain_destroy(struct rcu_head *head)
 
     xfree(d->mem_event);
     xfree(d->pbuf);
-    free_remap_facility(d->remap);
+    free_realloc_facility(d->realloc);
 
     for ( i = d->max_vcpus - 1; i >= 0; i-- )
         if ( (v = d->vcpu[i]) != NULL )

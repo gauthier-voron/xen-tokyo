@@ -321,6 +321,9 @@ struct p2m_domain *p2m_get_p2m(struct vcpu *v);
 
 #define p2m_get_pagetable(p2m)  ((p2m)->phys_table)
 
+void raw_p2m_lock(struct p2m_domain *p2m);
+void raw_p2m_unlock(struct p2m_domain *p2m);
+
 /**** p2m query accessors. They lock p2m_lock, and thus serialize
  * lookups wrt modifications. They _do not_ release the lock on exit.
  * After calling any of the variants below, caller needs to use

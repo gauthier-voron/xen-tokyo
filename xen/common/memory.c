@@ -172,6 +172,10 @@ static void populate_physmap(struct memop_args *a)
             mfn = page_to_mfn(page);
             guest_physmap_add_page(d, gpfn, mfn, a->extent_order);
 
+#ifdef BIGOS_MEMORY_MOVE
+            register_for_realloc(d, gpfn, a->extent_order);
+#endif
+
             if ( !paging_mode_translate(d) )
             {
                 for ( j = 0; j < (1 << a->extent_order); j++ )
@@ -1214,41 +1218,72 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 }
 
 
-struct remap_facility *alloc_remap_facility(void)
+#define __atomic64_read(src)   read_u64_atomic(src)
+
+static inline void __atomic64_add(unsigned long *dest, unsigned long add)
 {
-    struct remap_facility *ptr = xmalloc(struct remap_facility);
+    asm volatile ("lock; addq %1, %0"
+                  : "=m" (*(volatile unsigned long *) dest)
+                  : "r" (add), "m" (*(volatile unsigned long *) dest));
+}
+
+
+struct realloc_facility *alloc_realloc_facility(void)
+{
+    struct realloc_facility *ptr = xmalloc(struct realloc_facility);
+    int cpu, node;
 
     if (ptr == NULL)
-        return ptr;
-    
-    spin_lock_init(&ptr->lock);
-    ptr->tree = RB_ROOT;
+        return NULL;
+
+    ptr->warning = 0;
+    ptr->token_tree = RB_ROOT;
+    rwlock_init(&ptr->token_tree_lock);
+
+    for_each_online_cpu (cpu) {
+        INIT_LIST_HEAD(&ptr->remap_bucket[cpu]);
+        spin_lock_init(&ptr->remap_bucket_lock[cpu]);
+    }
+
+    for (node = 0; node < MAX_NUMNODES; node++)
+        ptr->page_pool_size[node] = 0;
+
+    ptr->apply_query = 0;
+    ptr->apply_done = 0;
+    ptr->apply_running = 0;
 
     return ptr;
 }
 
-void free_remap_facility(struct remap_facility *ptr)
+void free_realloc_facility(struct realloc_facility *ptr)
 {
-    struct rb_node *node;
+    struct rb_node *tnode;
+    unsigned long i;
+    int node;
 
-    node = rb_first(&ptr->tree);
-    while (node) {
-        rb_erase(node, &ptr->tree);
-        xfree(container_of(node, struct unmap_gfn, node));
-        node = rb_first(&ptr->tree);
+    tnode = rb_first(&ptr->token_tree);
+    while (tnode) {
+        rb_erase(tnode, &ptr->token_tree);
+        xfree(container_of(tnode, struct realloc_token, token_node));
+        tnode = rb_first(&ptr->token_tree);
     }
-    
+
+    for (node = 0; node < MAX_NUMNODES; node++)
+        for (i=0; i<ptr->page_pool_size[node]; i++)
+            free_domheap_pages(ptr->page_pool[node][i], 0);
+
     xfree(ptr);
 }
 
 
-static struct unmap_gfn *__find_gfn(struct domain *d, unsigned long gfn)
+struct realloc_token *find_realloc_token(struct realloc_facility *f,
+                                         unsigned long gfn)
 {
-    struct rb_node *node = d->remap->tree.rb_node;
-    struct unmap_gfn *data = NULL;
+    struct rb_node *node = f->token_tree.rb_node;
+    struct realloc_token *data = NULL;
 
     while (node) {
-        data = container_of(node, struct unmap_gfn, node);
+        data = container_of(node, struct realloc_token, token_node);
 
         if (gfn < data->gfn)
             node = node->rb_left;
@@ -1259,107 +1294,225 @@ static struct unmap_gfn *__find_gfn(struct domain *d, unsigned long gfn)
     }
 
     return data;
-
 }
 
-static int __unmap_gfn(struct domain *d, unsigned long gfn,
-                       struct unmap_gfn *hint)
+int insert_realloc_token(struct realloc_facility *f, struct realloc_token *t,
+                         struct realloc_token *h)
 {
-    struct rb_node **new = &(d->remap->tree.rb_node), *parent = NULL;
-    struct unmap_gfn *data;
+    struct rb_node **new = &f->token_tree.rb_node, *parent = NULL;
     
-    if (hint == NULL)
-        hint = __find_gfn(d, gfn);
+    if (h == NULL)
+        h = find_realloc_token(f, t->gfn);
 
-    if (hint != NULL) {
-        if (hint->gfn == gfn)
-            return 0;
+    if (h != NULL) {
+        if (h->gfn == t->gfn)
+            return -1;
 
-        parent = &hint->node;
-        if (gfn < hint->gfn)
+        parent = &h->token_node;
+        if (t->gfn < h->gfn)
             new = &parent->rb_left;
         else
             new = &parent->rb_right;
     }
 
-    data = xmalloc(struct unmap_gfn);
-    if (data == NULL)
-        return -1;
-
-    data->gfn = gfn;
-
-    rb_link_node(&data->node, parent, new);
-    rb_insert_color(&data->node, &d->remap->tree);
-    return 1;
+    rb_link_node(&t->token_node, parent, new);
+    rb_insert_color(&t->token_node, &f->token_tree);
+    return 0;
 }
 
-static int __remap_gfn(struct domain *d, unsigned long gfn,
-                       struct unmap_gfn *hint)
+int remove_realloc_token(struct realloc_facility *f, struct realloc_token *t)
 {
-    if (hint == NULL)
-        hint = __find_gfn(d, gfn);
-
-    if (hint == NULL || hint->gfn != gfn)
-        return 0;
-
-    rb_erase(&hint->node, &d->remap->tree);
-    xfree(hint);
-    return 1;
-}
-
-
-int memory_unmap(struct domain *d, unsigned long gfn, unsigned int order)
-{
-    struct p2m_domain *p2m = p2m_get_hostp2m(d);
-    struct page_info *page;
-    unsigned long mfn;
-    int ret;
-
-    spin_lock(&d->remap->lock);
-
-    page = __memory_move_steal(d, gfn);
-    if ( unlikely(page == NULL) )
-        goto unlock;
-        
-    ret = __unmap_gfn(d, gfn, NULL);
-    if (ret != 1)
-        goto assign;
-
-    mfn = page_to_mfn(page);
-    p2m->set_entry(p2m, gfn, _mfn(mfn), 0, p2m_ram_ro, p2m_access_rw);
-
-assign:
-    if ( assign_pages(d, page, 0, MEMF_no_refcount) )
-        BUG();
-    put_gfn(d, gfn);
-
-unlock:
-    spin_unlock(&d->remap->lock);
-
+    rb_erase(&t->token_node, &f->token_tree);
     return 0;
 }
 
 
+static int __register_one_for_realloc(struct domain *d, unsigned long gfn)
+{
+    struct realloc_token *token, *hint;
+    int ret = 0;
+
+    write_lock(&d->realloc->token_tree_lock);
+
+    hint = find_realloc_token(d->realloc, gfn);
+    if (hint != NULL && hint->gfn == gfn)
+        goto err_unlock;
+
+    token = xmalloc(struct realloc_token);
+    if (token == NULL)
+        goto err_unlock;
+
+    token->gfn = gfn;
+    token->state = REALLOC_STATE_MAP;
+
+    if (insert_realloc_token(d->realloc, token, hint) != 0) {
+        xfree(token);
+        goto err_unlock;
+    }
+
+    ret = 1;
+ err_unlock:
+    write_unlock(&d->realloc->token_tree_lock);
+    return ret;
+}
+
+unsigned long register_for_realloc(struct domain *d, unsigned long gfn,
+                                   unsigned int order)
+{
+    unsigned long count = 0;
+    unsigned long cur, last = gfn + (1ul << order);
+
+    for (cur = gfn; cur < last; cur++)
+        if (__register_one_for_realloc(d, cur))
+            count++;
+
+    return count;
+}
 
 
-static int __memory_alloc_replace(struct domain *d, unsigned long gfn,
-                                  struct page_info *old, struct page_info *new)
+static int __unmap_realloc_one(struct domain *d, unsigned long gfn)
+{
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    struct realloc_token *token;
+    struct page_info *old;
+    int state, nstate, flags, ret = 0;
+    p2m_access_t access;
+    unsigned long mfn;
+    p2m_type_t type;
+
+    read_lock(&d->realloc->token_tree_lock);
+    token = find_realloc_token(d->realloc, gfn);
+    read_unlock(&d->realloc->token_tree_lock);
+    
+    if (token == NULL || token->gfn != gfn)
+        goto err;
+
+    nstate = REALLOC_STATE_MAP;
+    state = cmpxchg(&token->state, REALLOC_STATE_MAP, REALLOC_STATE_BUSY);
+    if (state != REALLOC_STATE_MAP)
+        goto err;
+
+    flags = P2M_ALLOC | P2M_UNSHARE;
+    mfn = mfn_x(get_gfn_type_access(p2m, gfn, &type, &access, flags, 0));
+    
+    if ( unlikely(!mfn_valid(mfn)) )
+        goto err_gfn;
+
+    if ( p2m_is_shared(type) )
+        goto err_gfn;
+    
+    old = mfn_to_page(mfn);
+    if ( unlikely(steal_page(d, old, MEMF_no_refcount)) )
+        goto err_gfn;
+    
+    token->mfn = mfn;
+    token->type = type;
+    token->access = access;
+
+    p2m->set_entry(p2m, gfn, _mfn(INVALID_MFN),0, p2m_ram_paged, p2m_access_n);
+
+    nstate = REALLOC_STATE_UNMAP;
+  err_gfn:
+    put_gfn(d, token->gfn);
+    
+    state = cmpxchg(&token->state, REALLOC_STATE_BUSY, nstate);
+    if (state != REALLOC_STATE_BUSY)
+        BUG();
+
+    ret = 1;
+ err:
+    return ret;
+}
+
+unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
+                            unsigned int order)
+{
+    unsigned long count = 0;
+    unsigned long cur, last = gfn + (1ul << order);
+
+    for (cur = gfn; cur < last; cur++)
+        if (__unmap_realloc_one(d, cur))
+            count++;
+
+    return count;
+}
+
+
+static int __remap_realloc_one(struct domain *d, unsigned long gfn, int copy)
+{
+    struct realloc_token *token;
+    unsigned int cpu = smp_processor_id();
+    int state, ret = 0;
+
+    read_lock(&d->realloc->token_tree_lock);
+    token = find_realloc_token(d->realloc, gfn);
+    read_unlock(&d->realloc->token_tree_lock);
+    
+    if (token == NULL || token->gfn != gfn)
+        goto out;
+    
+    state = cmpxchg(&token->state, REALLOC_STATE_UNMAP, REALLOC_STATE_BUSY);
+    if (state != REALLOC_STATE_UNMAP)
+        goto out;
+
+    token->node = cpu_to_node(cpu);
+    token->copy = copy;
+
+    spin_lock(&d->realloc->remap_bucket_lock[cpu]);
+    
+    list_add(&token->bucket_cell, &d->realloc->remap_bucket[cpu]);
+
+    state = cmpxchg(&token->state, REALLOC_STATE_BUSY, REALLOC_STATE_DELAY);
+    if (state != REALLOC_STATE_BUSY)
+        BUG();
+
+    spin_unlock(&d->realloc->remap_bucket_lock[cpu]);
+
+    __atomic64_add(&d->realloc->apply_query, 1);
+    ret = 1;
+ out:
+    return ret;
+}
+
+unsigned long remap_realloc(struct domain *d, unsigned long gfn,
+                            unsigned int order)
+{
+    unsigned long count = 0;
+    unsigned long cur, last = gfn + (1ul << order);
+    unsigned query, done;
+
+    for (cur = gfn; cur < last; cur++)
+        if (__remap_realloc_one(d, cur, 0))
+            count++;
+
+    query = __atomic64_read(&d->realloc->apply_query);
+    done = __atomic64_read(&d->realloc->apply_done);
+    if (done + REALLOC_APPLY_TRIGGER < query)
+        apply_realloc(d);
+    
+    return count;
+}
+
+
+static int __replace_page(struct domain *d, unsigned long gfn,
+                          struct page_info *old, struct page_info *new,
+                          p2m_type_t type, p2m_access_t access, int copy)
 {
     unsigned long old_mfn = page_to_mfn(old), new_mfn = page_to_mfn(new);
-
-    ASSERT(gfn == mfn_to_gmfn(d, old_mfn));
-    ASSERT(old->count_info & _PGC_allocated);
-    ASSERT(new->count_info == 0);
-    ASSERT(mfn_valid(new_mfn));
-    ASSERT(mfn_valid(old_mfn));
-    ASSERT(!SHARED_M2P(gfn));
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
 
     if ( assign_pages(d, new, 0, MEMF_no_refcount) )
         return -1;
 
+    if (copy)
+        copy_domain_page(new_mfn, old_mfn);
+
     guest_physmap_add_page(d, gfn, new_mfn, 0);
 
-    put_page(old);             /* release the last reference on the old page */
+    if (type != p2m_ram_rw || access != p2m->default_access)
+        p2m->set_entry(p2m, gfn, _mfn(new_mfn), 0, type, access);
+
+    put_page(old);
 
     if ( !paging_mode_translate(d) )
         set_gpfn_from_mfn(new_mfn, gfn);
@@ -1367,69 +1520,168 @@ static int __memory_alloc_replace(struct domain *d, unsigned long gfn,
     return 0;
 }
 
-static void __memory_ft(struct domain *d, unsigned long gfn,
-                        unsigned long node)
+static struct page_info *__alloc_cached_page(struct domain *d, int node)
 {
-    unsigned int memflags;
-    struct page_info *old = NULL;
-    struct page_info *new = NULL;
-    int onode;
-
-    ASSERT(node < MAX_NUMNODES);
+    unsigned int memflags, i;
+    unsigned long mfn, *size;
+    struct page_info *pg;
 
     memflags = domain_clamp_alloc_bitsize(d, BITS_PER_LONG + PAGE_SHIFT);
     memflags = MEMF_bits(memflags);
-    memflags = memflags | MEMF_node(node) | MEMF_exact_node;
+    memflags = memflags | MEMF_node(node);
 
-    /* In success, deassign the old mfn from the domain */
-    old = __memory_move_steal(d, gfn);                        /* get the gfn */
-    if ( unlikely(old == NULL) )                         /* unless it failed */
-        goto fail_gfn;
+    size = &d->realloc->page_pool_size[node];
 
-    onode = phys_to_nid(page_to_mfn(old) << PAGE_SHIFT);
+    if (*size == 0) {
+        pg = alloc_domheap_pages(NULL, REALLOC_POOL_ORDER, memflags);
+        mfn = page_to_mfn(pg);
+        for (i = 0; i < REALLOC_POOL_SIZE; i++)
+            d->realloc->page_pool[node][i] = mfn_to_page(mfn + i);
+        *size = REALLOC_POOL_SIZE;
+    }
+    
+    (*size)--;
+    return d->realloc->page_pool[node][*size];
+}
 
-    new = alloc_domheap_pages(NULL, 0, memflags);
+static unsigned int __apply_realloc_one(struct domain *d,
+                                        struct realloc_token *token)
+{
+    struct page_info *old = NULL;
+    struct page_info *new = NULL;
+    int ret, state;
+
+    state = cmpxchg(&token->state, REALLOC_STATE_DELAY, REALLOC_STATE_BUSY);
+    if (state != REALLOC_STATE_DELAY)
+        return 1;
+
+    old = mfn_to_page(token->mfn);
+
+    new = __alloc_cached_page(d, token->node);
     if ( unlikely(new == NULL) )
         goto fail_old;
 
-    if ( __memory_alloc_replace(d, gfn, old, new) )
+    raw_p2m_lock(p2m_get_hostp2m(d));
+    ret = __replace_page(d, token->gfn, old, new, token->type, token->access,
+                         token->copy);
+    raw_p2m_unlock(p2m_get_hostp2m(d));
+    
+    if ( ret )
         goto fail_new;
 
-    put_gfn(d, gfn);                                          /* put the gfn */
-
-    return;
+    goto out;
  fail_new:
     free_domheap_pages(new, 0);
  fail_old:
     /* Now reassign the old mfn to the domain */
     if ( assign_pages(d, old, 0, MEMF_no_refcount) )
         BUG();
-    put_gfn(d, gfn);                                          /* put the gfn */
- fail_gfn:
-    return;
+    
+ out:
+    state = cmpxchg(&token->state, REALLOC_STATE_BUSY, REALLOC_STATE_MAP);
+    if (state != REALLOC_STATE_BUSY)
+        BUG();
+    
+    return 1;
 }
 
-int memory_remap(struct domain *d, unsigned long gfn)
+static inline void __spin_ns(unsigned long ns)
 {
-    struct unmap_gfn *found;
-    int node, ret = 0;
+    unsigned long end = NOW() + ns;
+    while (NOW() < end)
+        ;
+}
 
-    spin_lock(&d->remap->lock);
+unsigned long apply_realloc(struct domain *d)
+{
+    struct realloc_token *token;
+    struct list_head *cell;
+    unsigned long done, cpudone, count = 0;
+    unsigned long query, running = -1;
+    unsigned long waited;
+    int cpu;
 
-    found = __find_gfn(d, gfn);
-    if ( found == NULL || found->gfn != gfn )
+    query = __atomic64_read(&d->realloc->apply_query);
+    done = __atomic64_read(&d->realloc->apply_done);
+    if (done >= query)
         goto out;
 
-    node = vcpu_to_node(current);
-    __memory_ft(d, gfn, node);
-    
-    __remap_gfn(d, gfn, found);
+    waited = 0;
+    running = cmpxchg(&d->realloc->apply_running, 0, 1);
+    while (running != 0) {
+        __spin_ns(REALLOC_BATCH_SPIN_NS);
+        waited++;
+        
+        done = __atomic64_read(&d->realloc->apply_done);
+        if (done >= query) {
+            goto out;
+        } else if (waited < REALLOC_BATCH_SPIN_COUNT &&
+                   done + REALLOC_APPLY_TRIGGER >= query) {
+            continue;
+        }
+        
+        running = cmpxchg(&d->realloc->apply_running, 0, 1);
+    }
+        
+    for_each_online_cpu (cpu) {
+        cpudone = 0;
+        spin_lock(&d->realloc->remap_bucket_lock[cpu]);
 
-    ret = 1;
-out:
-    spin_unlock(&d->remap->lock);
+        while (!list_empty(&d->realloc->remap_bucket[cpu])) {
+            cell = d->realloc->remap_bucket[cpu].next;
+            token = container_of(cell, struct realloc_token, bucket_cell);
     
-    return ret;
+            __apply_realloc_one(d, token);
+            list_del(cell);
+            cpudone++;
+        }
+
+        spin_unlock(&d->realloc->remap_bucket_lock[cpu]);
+
+        __atomic64_add(&d->realloc->apply_done, cpudone);
+        count += cpudone;
+    }
+
+ out:
+    if (running == 0)
+        cmpxchg(&d->realloc->apply_running, 1, 0);
+    return count;
+}
+
+unsigned long remap_realloc_now(struct domain *d, unsigned long gfn,
+                                unsigned int order)
+{
+    unsigned long count = 0;
+    unsigned long cur, last = gfn + (1ul << order);
+
+    for (cur = gfn; cur < last; cur++)
+        if (__remap_realloc_one(d, cur, 1))
+            count++;
+
+    apply_realloc(d);
+    return count;
+}
+
+void remap_all_pages(struct domain *d)
+{
+    struct rb_node *node;
+    struct realloc_token *token;
+    
+    read_lock(&d->realloc->token_tree_lock);
+
+    node = rb_first(&d->realloc->token_tree);
+    while (node) {
+        token = container_of(node, struct realloc_token, token_node);
+        
+        if (token->state == REALLOC_STATE_UNMAP)
+            __remap_realloc_one(d, token->gfn, 1);
+
+        node = rb_next(node);
+    }
+
+    read_unlock(&d->realloc->token_tree_lock);
+
+    apply_realloc(d);
 }
 
 

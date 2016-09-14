@@ -706,12 +706,14 @@ static void hap_update_paging_modes(struct vcpu *v)
     put_gfn(d, cr3_gfn);
 }
 
+extern int BIGOS_DEBUG_1;
 static void
 hap_write_p2m_entry(struct domain *d, unsigned long gfn, l1_pgentry_t *p,
                     l1_pgentry_t new, unsigned int level)
 {
     uint32_t old_flags;
     bool_t flush_nestedp2m = 0;
+    unsigned long start;
 
     /* We know always use the host p2m here, regardless if the vcpu
      * is in host or guest mode. The vcpu can be in guest mode by
@@ -731,9 +733,16 @@ hap_write_p2m_entry(struct domain *d, unsigned long gfn, l1_pgentry_t *p,
             && perms_strictly_increased(old_flags, l1e_get_flags(new)) );
     }
 
+    start = NOW();
     safe_write_pte(p, new);
-    if ( old_flags & _PAGE_PRESENT )
+    if ( old_flags & _PAGE_PRESENT ) {
+        d->realloc->timers[smp_processor_id()][11] += 1;
         flush_tlb_mask(d->domain_dirty_cpumask);
+    } else {
+        d->realloc->timers[smp_processor_id()][10] += 1;
+    }
+    if (BIGOS_DEBUG_1)
+        d->realloc->timers[smp_processor_id()][12] += NOW() - start;
 
     paging_unlock(d);
 

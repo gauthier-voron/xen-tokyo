@@ -423,15 +423,27 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 
 #define REALLOC_MAX_WARNING       20
 
+
+#define REALLOC_TREE_ADDRLEN       52
+#define REALLOC_TREE_LEVELS         4
+#define REALLOC_TREE_PARTITION     13
+#define REALLOC_TREE_ARRLEN       (1ul << REALLOC_TREE_PARTITION)
+
+#define ENTRY_MASK							\
+	((1ul << REALLOC_TREE_PARTITION) - 1)
+#define ENTRY_LEVEL_SHIFT(level)					\
+	((REALLOC_TREE_LEVELS - 1 - level) * REALLOC_TREE_PARTITION)
+#define ENTRY_LEVEL_INDEX(level, gfn)				        \
+	((gfn >> ENTRY_LEVEL_SHIFT(level)) & ENTRY_MASK)
+
 struct realloc_facility
 {
-	int                warning;
-	
-	struct rb_root     token_tree;
+	void              *token_tree;
 	rwlock_t           token_tree_lock;
 
 	struct list_head   remap_bucket[NR_CPUS];
 	spinlock_t         remap_bucket_lock[NR_CPUS];
+	unsigned long      remap_last_try[NR_CPUS];
 	
 	struct page_info  *page_pool[MAX_NUMNODES][REALLOC_POOL_SIZE];
 	unsigned long      page_pool_size[MAX_NUMNODES];
@@ -439,11 +451,15 @@ struct realloc_facility
 	unsigned long      apply_query;
 	unsigned long      apply_done;
 	unsigned long      apply_running;
+
+	unsigned long      timers[NR_CPUS][20];
 };
 
 struct realloc_facility *alloc_realloc_facility(void);
 
 void free_realloc_facility(struct realloc_facility *ptr);
+
+void dump_realloc_facility(struct realloc_facility *ptr);
 
 
 #define REALLOC_STATE_MAP   0
@@ -463,6 +479,7 @@ struct realloc_token
 	struct rb_node    token_node;
 	struct list_head  bucket_cell;
 };
+
 
 /*
  * Find the realloc token with the given gfn.
@@ -509,7 +526,7 @@ unsigned long remap_realloc(struct domain *d, unsigned long gfn,
 unsigned long apply_realloc(struct domain *d);
 
 unsigned long remap_realloc_now(struct domain *d, unsigned long gfn,
-				unsigned int order);
+				unsigned int order, int fault);
 
 
 void remap_all_pages(struct domain *d);

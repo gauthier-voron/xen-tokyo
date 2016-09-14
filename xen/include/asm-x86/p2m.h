@@ -364,7 +364,17 @@ static inline mfn_t get_gfn_type(struct domain *d,
 /* Will release the p2m_lock for this gfn entry. */
 void __put_gfn(struct p2m_domain *p2m, unsigned long gfn);
 
-#define put_gfn(d, gfn) __put_gfn(p2m_get_hostp2m((d)), (gfn))
+extern int BIGOS_DEBUG_0;
+static inline void __bigos_put_gfn(struct p2m_domain *p2m, unsigned long gfn,
+                                   const char *file, int line)
+{
+    if (BIGOS_DEBUG_0)
+        printk("conflicting p2m_lock %s:%d\n", file, line);
+    __put_gfn(p2m, gfn);
+}
+
+#define put_gfn(d, gfn)                                                 \
+    __bigos_put_gfn(p2m_get_hostp2m((d)), (gfn), __FILE__, __LINE__)
 
 /* The intent of the "unlocked" accessor is to have the caller not worry about
  * put_gfn. They apply to very specific situations: debug printk's, dumps 

@@ -250,6 +250,7 @@ extern unsigned int domain_allocation_max_order;
 #ifdef BIGOS_MEMORY_STATS
 #  define HYPERCALL_BIGOS_MEMSTATS      -11
 #  define HYPERCALL_BIGOS_VMESTATS      -20
+#  define HYPERCALL_BIGOS_RLCSTATS      -21
 #endif
 
 #ifdef BIGOS_CARREFOUR
@@ -847,6 +848,20 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return 0;
     }
 #  endif
+    
+    case HYPERCALL_BIGOS_RLCSTATS:
+    {
+        struct domain *d;
+        
+        d = get_domain_by_id(0);
+        while (d != NULL) {
+            dump_realloc_facility(d->realloc);
+            d = d->next_in_list;
+        }
+        
+        return 0;
+    }
+
 #endif /* BIGOS_MEMORY_STATS */
 #ifdef BIGOS_CARREFOUR
     case HYPERCALL_BIGOS_CFR_INIT:

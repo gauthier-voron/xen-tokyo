@@ -74,7 +74,7 @@ static void __domain_finalise_shutdown(struct domain *d)
 {
     struct vcpu *v;
 
-    remap_all_pages(d);
+    enable_realloc_facility(d, 0);
 
     BUG_ON(!spin_is_locked(&d->shutdown_lock));
 

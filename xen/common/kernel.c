@@ -236,6 +236,7 @@ void __init do_initcalls(void)
 #  define HYPERCALL_BIGOS_PTSELFMOVE    -5
 #  define HYPERCALL_BIGOS_FLUSHTLB      -6
 #  define HYPERCALL_BIGOS_ALLOCGRAIN   -19
+#  define HYPERCALL_BIGOS_ALLOCFT      -21
 
 extern unsigned int domain_allocation_max_order;
 #endif
@@ -250,7 +251,6 @@ extern unsigned int domain_allocation_max_order;
 #ifdef BIGOS_MEMORY_STATS
 #  define HYPERCALL_BIGOS_MEMSTATS      -11
 #  define HYPERCALL_BIGOS_VMESTATS      -20
-#  define HYPERCALL_BIGOS_RLCSTATS      -21
 #endif
 
 #ifdef BIGOS_CARREFOUR
@@ -683,6 +683,29 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         return 0;
     }
+
+    case HYPERCALL_BIGOS_ALLOCFT:
+    {
+        unsigned long enable;
+        struct domain *d;
+
+        if ( copy_from_guest(&enable, arg, 1) ) {
+            printk("error on arg\n");
+            return -1;
+        }
+
+        d = get_domain_by_id(0);
+        while (d != NULL) {
+            if (enable_realloc_facility(d, (int) enable))
+                return hypercall_create_continuation(
+                    __HYPERVISOR_xen_version, "ih", HYPERCALL_BIGOS_ALLOCFT,
+                    arg);
+            d = d->next_in_list;
+        }
+        
+        return 0;
+    }
+
 #endif /* BIGOS_MEMORY_MOVE */
 
 #ifdef BIGOS_PERF_COUNTING
@@ -848,20 +871,6 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return 0;
     }
 #  endif
-    
-    case HYPERCALL_BIGOS_RLCSTATS:
-    {
-        struct domain *d;
-        
-        d = get_domain_by_id(0);
-        while (d != NULL) {
-            dump_realloc_facility(d->realloc);
-            d = d->next_in_list;
-        }
-        
-        return 0;
-    }
-
 #endif /* BIGOS_MEMORY_STATS */
 #ifdef BIGOS_CARREFOUR
     case HYPERCALL_BIGOS_CFR_INIT:

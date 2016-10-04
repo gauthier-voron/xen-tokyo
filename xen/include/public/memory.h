@@ -524,11 +524,16 @@ DEFINE_XEN_GUEST_HANDLE(xen_mem_sharing_op_t);
 #define XENMEM_page_mapping             42
 #define XENMEM_page_mapping_unmap        0
 #define XENMEM_page_mapping_remap        1
+
 struct xen_page_mapping {
-    unsigned long gfn;
-    unsigned int order;
-    unsigned int operation;
+    uint64_t size;
+    XEN_GUEST_HANDLE(uint64_t) pfns;
+    XEN_GUEST_HANDLE(uint32_t) orders;
+    XEN_GUEST_HANDLE(uint32_t) operations;
+    XEN_GUEST_HANDLE(uint64_t) tickets;
 };
+typedef struct xen_page_mapping xen_page_mapping_t;
+DEFINE_XEN_GUEST_HANDLE(xen_page_mapping_t);
 
 
 #endif /* defined(__XEN__) || defined(__XEN_TOOLS__) */

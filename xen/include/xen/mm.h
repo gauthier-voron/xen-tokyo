@@ -413,10 +413,15 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 			  unsigned long node, int flags);
 
 
-#define REALLOC_POOL_ORDER        7
+/* #define REALLOC_POOL_ORDER        7 */
+#define REALLOC_POOL_ORDER        0
 #define REALLOC_POOL_SIZE        (1ul << REALLOC_POOL_ORDER)
 
-#define REALLOC_APPLY_TRIGGER     32
+/* #define REALLOC_DELAY_TRIGGER     1024 */
+/* #define REALLOC_APPLY_TRIGGER     32 */
+#define REALLOC_DELAY_TRIGGER     1
+#define REALLOC_APPLY_TRIGGER     0
+#define REALLOC_RMALL_TRIGGER     (1ul << 17)
 
 #define REALLOC_BATCH_SPIN_NS     25000
 #define REALLOC_BATCH_SPIN_COUNT  10
@@ -438,19 +443,27 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 
 struct realloc_facility
 {
-	void              *token_tree;
-	rwlock_t           token_tree_lock;
+	void              *token_tree;            /* how to finf the tokens */
+	rwlock_t           token_tree_lock;       /* lock for token_tree */
 
-	struct list_head   remap_bucket[NR_CPUS];
+	struct list_head   prepare_bucket[NR_CPUS];       /* batch unmapping */
+	spinlock_t         prepare_bucket_lock[NR_CPUS];
+
+	unsigned long      enabled;               /* remapping is enabled */
+	unsigned long      preparing;             /* # of preparing cores */
+	unsigned long      ready_count;           /* # of prepared tokens */
+	int                deallocing;            /* deallocing if !0 */
+
+	struct list_head   remap_bucket[NR_CPUS];       /* batch remapping */
 	spinlock_t         remap_bucket_lock[NR_CPUS];
-	unsigned long      remap_last_try[NR_CPUS];
+	unsigned long      remap_last_try[NR_CPUS];     /* last NPF memory */
 	
 	struct page_info  *page_pool[MAX_NUMNODES][REALLOC_POOL_SIZE];
-	unsigned long      page_pool_size[MAX_NUMNODES];
+	unsigned long      page_pool_size[MAX_NUMNODES];    /* batch alloc */
 
-	unsigned long      apply_query;
-	unsigned long      apply_done;
-	unsigned long      apply_running;
+	unsigned long      apply_query;      /* amount of ready to map */
+	unsigned long      apply_done;       /* amount of actually mapped */
+	unsigned long      apply_running;    /* some core is mapping if !0 */
 
 	unsigned long      timers[NR_CPUS][20];
 };
@@ -459,25 +472,32 @@ struct realloc_facility *alloc_realloc_facility(void);
 
 void free_realloc_facility(struct realloc_facility *ptr);
 
-void dump_realloc_facility(struct realloc_facility *ptr);
+/*
+ * Return 0 if operation complete, 1 if preempted (and need to be relaunched).
+ */
+int enable_realloc_facility(struct domain *d, int enable);
 
 
-#define REALLOC_STATE_MAP   0
-#define REALLOC_STATE_UNMAP 1
-#define REALLOC_STATE_DELAY 2
-#define REALLOC_STATE_BUSY  3
+/* Automata states */
+#define REALLOC_STATE_MAP   0      /* currently mapped - normal state */
+#define REALLOC_STATE_READY 1      /* queued for mapping - still mapped */
+#define REALLOC_STATE_UBUSY 2      /* busy unmapping - transtory state */
+#define REALLOC_STATE_UNMAP 3      /* currently unmapped */
+#define REALLOC_STATE_DELAY 4      /* queued for remapping - still unmapped */
+#define REALLOC_STATE_BUSY  5      /* busy - transitory state */
 
 struct realloc_token
 {
-	unsigned long     gfn;
-	unsigned long     mfn;
-	int               copy;
-	unsigned int      type;
-	unsigned int      access;
-	int               state;
-	int               node;
-	struct rb_node    token_node;
-	struct list_head  bucket_cell;
+	unsigned long     gfn;          /* gfn mapped or to remap */
+	unsigned long     mfn;          /* last mfn mapped on */
+	int               copy;         /* need copy from old page */
+	unsigned int      type;         /* last mapping type */
+	unsigned int      access;       /* last mapping access */
+	int               state;        /* token automata state */
+	int               node;         /* node to remap on */
+	struct list_head  bucket_cell;  /* batching list cell */
+	unsigned long     unmap_ticket; /* ticket of the last unmap */
+	unsigned long     remap_ticket; /* ticket of the last remap */
 };
 
 
@@ -512,7 +532,7 @@ unsigned long register_for_realloc(struct domain *d, unsigned long gfn,
  * Return the amount of 0-order pages unmapped successfully.
  */
 unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
-			    unsigned int order);
+			    unsigned int order, unsigned long ticket);
 
 /*
  * Prepare to remap the given gfn with the given order making it available
@@ -521,7 +541,7 @@ unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
  * Return the amount of 0-order pages prepared successfully.
  */
 unsigned long remap_realloc(struct domain *d, unsigned long gfn,
-			    unsigned int order);
+			    unsigned int order, unsigned long ticket);
 
 unsigned long apply_realloc(struct domain *d);
 
@@ -529,7 +549,10 @@ unsigned long remap_realloc_now(struct domain *d, unsigned long gfn,
 				unsigned int order, int fault);
 
 
-void remap_all_pages(struct domain *d);
+/*
+ * Return 0 if all possible pages have been remapped, or 1 if preempted.
+ */
+int remap_all_pages(struct domain *d);
 
 
 #endif

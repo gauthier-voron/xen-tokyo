@@ -4625,6 +4625,9 @@ static long hvm_grant_table_op(
 static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     long rc;
+    unsigned long i, start = NOW();
+    uint64_t *pfns, *tickets;
+    uint32_t *orders, *operations;
     struct xen_page_mapping xmapping;
 
     switch ( cmd & MEMOP_CMD_MASK )
@@ -4638,15 +4641,59 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         current->domain->arch.hvm_domain.qemu_mapcache_invalidate = 1;
         return rc;
     case XENMEM_page_mapping:
+        rc = -1;
+        
         if ( copy_from_guest(&xmapping, arg, 1) )
-            return -1;
-        else if ( xmapping.operation == XENMEM_page_mapping_unmap )
-            return unmap_realloc(current->domain, xmapping.gfn,xmapping.order);
-        else if ( xmapping.operation == XENMEM_page_mapping_remap )
-            return remap_realloc(current->domain, xmapping.gfn,xmapping.order);
-        else
-            return -1;
-        break;
+            goto err;
+
+        pfns = xmalloc_array(uint64_t, xmapping.size);
+        orders = xmalloc_array(uint32_t, xmapping.size);
+        operations = xmalloc_array(uint32_t, xmapping.size);
+        tickets = xmalloc_array(uint64_t, xmapping.size);
+
+        rc = -1;
+        if (!pfns || !orders || !operations || !tickets)
+            goto err_free;
+
+        if (__copy_from_guest_offset(pfns, xmapping.pfns, 0, xmapping.size))
+            goto err_free;
+        if (__copy_from_guest_offset(orders, xmapping.orders, 0,
+                                     xmapping.size))
+            goto err_free;
+        if (__copy_from_guest_offset(operations, xmapping.operations, 0,
+                                     xmapping.size))
+            goto err_free;
+        if (__copy_from_guest_offset(tickets, xmapping.tickets, 0,
+                                     xmapping.size))
+            goto err_free;
+
+        rc = 0;
+
+        for (i = 0; i < xmapping.size; i++)
+            if ( operations[i] == XENMEM_page_mapping_remap )
+                rc |= remap_realloc(current->domain, pfns[i], orders[i],
+                                    tickets[i]);
+
+        for (i = 0; i < xmapping.size; i++)
+            if ( operations[i] == XENMEM_page_mapping_unmap )
+                rc |= unmap_realloc(current->domain, pfns[i], orders[i],
+                                    tickets[i]);
+            else if ( operations[i] == XENMEM_page_mapping_remap )
+                rc |= remap_realloc(current->domain, pfns[i], orders[i],
+                                    tickets[i]);
+            else if ( operations[i] != XENMEM_page_mapping_remap )
+                rc = -1;
+
+    err_free:
+        xfree(pfns);
+        xfree(orders);
+        xfree(operations);
+        xfree(tickets);
+    err:
+        current->domain->realloc->timers[smp_processor_id()][15] += NOW() - start;
+        current->domain->realloc->timers[smp_processor_id()][16] += 1;
+        
+        return rc;
     }
     return do_memory_op(cmd, arg);
 }

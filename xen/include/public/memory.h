@@ -529,6 +529,7 @@ struct xen_page_mapping {
     uint64_t size;
     XEN_GUEST_HANDLE(uint64_t) pfns;
     XEN_GUEST_HANDLE(uint32_t) orders;
+    XEN_GUEST_HANDLE(uint32_t) cpus;
     XEN_GUEST_HANDLE(uint32_t) operations;
     XEN_GUEST_HANDLE(uint64_t) tickets;
 };

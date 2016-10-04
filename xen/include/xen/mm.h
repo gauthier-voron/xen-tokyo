@@ -446,6 +446,13 @@ struct realloc_facility
 	void              *token_tree;            /* how to finf the tokens */
 	rwlock_t           token_tree_lock;       /* lock for token_tree */
 
+	unsigned long      hypercall_bufsize;     /* size of the arrays */
+	uint64_t          *hypercall_pfns;        /* what pfn to work on */
+	uint64_t          *hypercall_tickets;     /* logic timestamp of op */
+	uint32_t          *hypercall_orders;      /* what order for the pfn */
+	uint32_t          *hypercall_cpus;        /* what cpu does the op */
+	uint32_t          *hypercall_operations;  /* what operation to do */
+
 	struct list_head   prepare_bucket[NR_CPUS];       /* batch unmapping */
 	spinlock_t         prepare_bucket_lock[NR_CPUS];
 
@@ -541,7 +548,8 @@ unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
  * Return the amount of 0-order pages prepared successfully.
  */
 unsigned long remap_realloc(struct domain *d, unsigned long gfn,
-			    unsigned int order, unsigned long ticket);
+			    unsigned int order, unsigned int node,
+			    unsigned long ticket);
 
 unsigned long apply_realloc(struct domain *d);
 

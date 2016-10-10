@@ -4692,9 +4692,6 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             if ( operations[i] == XENMEM_page_mapping_unmap )
                 rc |= unmap_realloc(current->domain, pfns[i], orders[i],
                                     tickets[i]);
-            else if ( operations[i] == XENMEM_page_mapping_remap )
-                rc |= remap_realloc(current->domain, pfns[i], orders[i],
-                                    nodes[cpus[i]], tickets[i]);
             else if ( operations[i] != XENMEM_page_mapping_remap )
                 rc = -1;
 

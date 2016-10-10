@@ -419,7 +419,7 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 
 /* #define REALLOC_DELAY_TRIGGER     1024 */
 /* #define REALLOC_APPLY_TRIGGER     32 */
-#define REALLOC_DELAY_TRIGGER     1
+#define REALLOC_DELAY_TRIGGER     0
 #define REALLOC_APPLY_TRIGGER     0
 #define REALLOC_RMALL_TRIGGER     (1ul << 17)
 

@@ -1425,6 +1425,7 @@ static int __register_one_for_realloc(struct domain *d, unsigned long gfn)
 
     token->gfn = gfn;
     token->state = REALLOC_STATE_MAP;
+    token->copy = 0;
     token->unmap_ticket = 0;
     token->remap_ticket = 0;
 
@@ -1453,6 +1454,21 @@ unsigned long register_for_realloc(struct domain *d, unsigned long gfn,
 }
 
 
+static int __update_ticket(unsigned long *ticket, unsigned long new)
+{
+    unsigned long old, expected = 0;
+    
+    while (new > expected) {
+        old = cmpxchg(ticket, expected, new);
+        if (old == expected)
+            return 1;
+        expected = old;
+    }
+
+    return 0;
+}
+
+
 static void __unmap_prepare_one(struct domain *d, unsigned long gfn,
                                 unsigned long ticket)
 {
@@ -1467,20 +1483,16 @@ static void __unmap_prepare_one(struct domain *d, unsigned long gfn,
     if (token == NULL || token->gfn != gfn)
         return;
 
+    if (!__update_ticket(&token->unmap_ticket, ticket))
+        return;
+    if (ticket < token->remap_ticket)
+        return;
+    
     nstate = REALLOC_STATE_MAP;
     state = cmpxchg(&token->state, REALLOC_STATE_MAP, REALLOC_STATE_BUSY);
     if (state != REALLOC_STATE_MAP)
         return;
 
-    token->copy = 0;
-
-    if (ticket > token->unmap_ticket)
-        token->unmap_ticket = ticket;
-    if (token->remap_ticket > token->unmap_ticket) {
-        /* goto err; */
-        token->copy = 1;
-    }
-    
     spin_lock(&d->realloc->prepare_bucket_lock[cpu]);
 
     list_add(&token->bucket_cell, &d->realloc->prepare_bucket[cpu]);
@@ -1489,7 +1501,6 @@ static void __unmap_prepare_one(struct domain *d, unsigned long gfn,
     spin_unlock(&d->realloc->prepare_bucket_lock[cpu]);
 
     nstate = REALLOC_STATE_READY;
- /* err: */
     state = cmpxchg(&token->state, REALLOC_STATE_BUSY, nstate);
     if (state != REALLOC_STATE_BUSY)
         BUG();
@@ -1510,11 +1521,12 @@ static int __unmap_dealloc_one(struct domain *d, struct realloc_token *token)
     if (state != REALLOC_STATE_READY)
         goto err;
 
-    /* if (token->remap_ticket > token->unmap_ticket) { */
+    if (token->unmap_ticket < token->remap_ticket) {
+        printk("glitch\n");
     /*     /\* printk("late abort %lu > %lu\n", token->remap_ticket, *\/ */
     /*     /\*        token->unmap_ticket); *\/ */
     /*     goto err_abort; */
-    /* } */
+    }
         
     gfn = token->gfn;
 
@@ -1622,18 +1634,6 @@ unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
 }
 
 
-static void __update_ticket(unsigned long *ticket, unsigned long new)
-{
-    unsigned long old, expected = 0;
-    
-    while (new > expected) {
-        old = cmpxchg(ticket, expected, new);
-        if (old == expected)
-            return;
-        expected = old;
-    }
-}
-
 static int __remap_realloc_one(struct domain *d, unsigned long gfn, int copy,
                                int fault, unsigned int node,
                                unsigned long ticket)
@@ -1647,34 +1647,33 @@ static int __remap_realloc_one(struct domain *d, unsigned long gfn, int copy,
     read_unlock(&d->realloc->token_tree_lock);
     
     if (token == NULL || token->gfn != gfn)
+        goto err;
+
+    if (ticket && !__update_ticket(&token->remap_ticket, ticket))
         goto out;
 
-    __update_ticket(&token->remap_ticket, ticket);
-
     /*
-     * If state is UBUSY, the page is being unmapped, so we really need to wait
-     * to avoid lefting this page unmapped forever.
-     * Otherwise, the page is either acquired (UNMAP), or already remapped
-     * (DELAY or MAP), or busy to doing it (BUSY).
+     * For now, UBUSY, BUSY and DELAY are transitory states so we want to
+     * wait the token reach a stable state to decide what to do.
      */
 
     do {
         state = cmpxchg(&token->state, REALLOC_STATE_UNMAP,REALLOC_STATE_BUSY);
-    } while (state == REALLOC_STATE_UBUSY);
+    } while (state == REALLOC_STATE_UBUSY ||
+             state == REALLOC_STATE_READY ||
+             state == REALLOC_STATE_DELAY ||
+             state == REALLOC_STATE_BUSY);
 
-    if (state != REALLOC_STATE_UNMAP) {        
-        /*
-         * If busy, we assume it is currently remapping. If not, and we are in
-         * a page fault handler, the fault will simply be triggered one more
-         * time.
-         */
-        if (state != REALLOC_STATE_MAP) {
-            ret = 1;
-        } else if (fault && d->realloc->remap_last_try[cpu] != gfn) {
-            ret = 1;
-        }
+    if (state != REALLOC_STATE_UNMAP) {
 
-        goto out;
+        /* If already mapped, then it's ok, do nothing */
+        if (state == REALLOC_STATE_MAP)
+            goto out;
+                
+        /* if (fault && d->realloc->remap_last_try[cpu] != gfn) */
+        /*     goto out; */
+
+        goto err;
     }
 
     token->node = node;
@@ -1691,8 +1690,9 @@ static int __remap_realloc_one(struct domain *d, unsigned long gfn, int copy,
     spin_unlock(&d->realloc->remap_bucket_lock[cpu]);
 
     __atomic64_add(&d->realloc->apply_query, 1);
-    ret = 1;
  out:
+    ret = 1;
+ err:
     return ret;
 }
 

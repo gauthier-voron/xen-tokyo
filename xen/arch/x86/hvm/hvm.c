@@ -4627,7 +4627,7 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     long rc;
     unsigned long i, start = NOW();
     uint64_t *pfns, *tickets;
-    uint32_t *orders, *operations, *cpus;
+    uint32_t *operations, *cpus;
     unsigned int nodes[NR_CPUS];
     struct xen_page_mapping xmapping;
     struct vcpu *vcpu;
@@ -4649,19 +4649,15 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             goto err;
 
         pfns = xmalloc_array(uint64_t, xmapping.size);
-        orders = xmalloc_array(uint32_t, xmapping.size);
         cpus = xmalloc_array(uint32_t, xmapping.size);
         operations = xmalloc_array(uint32_t, xmapping.size);
         tickets = xmalloc_array(uint64_t, xmapping.size);
 
         rc = -1;
-        if (!pfns || !orders || !operations || !tickets)
+        if (!pfns || !operations || !tickets)
             goto err_free;
 
         if (__copy_from_guest_offset(pfns, xmapping.pfns, 0, xmapping.size))
-            goto err_free;
-        if (__copy_from_guest_offset(orders, xmapping.orders, 0,
-                                     xmapping.size))
             goto err_free;
         if (__copy_from_guest_offset(cpus, xmapping.cpus, 0,
                                      xmapping.size))
@@ -4685,19 +4681,17 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         
         for (i = xmapping.size - 1; i < xmapping.size ; i--)
             if ( operations[i] == XENMEM_page_mapping_remap )
-                rc |= remap_realloc(current->domain, pfns[i], orders[i],
-                                    nodes[cpus[i]], tickets[i]);
+                rc |= remap_realloc(current->domain, pfns[i], nodes[cpus[i]],
+                                    tickets[i]);
 
         for (i = xmapping.size - 1; i < xmapping.size ; i--)
             if ( operations[i] == XENMEM_page_mapping_unmap )
-                rc |= unmap_realloc(current->domain, pfns[i], orders[i],
-                                    tickets[i]);
+                rc |= unmap_realloc(current->domain, pfns[i], tickets[i]);
             else if ( operations[i] != XENMEM_page_mapping_remap )
                 rc = -1;
 
     err_free:
         xfree(pfns);
-        xfree(orders);
         xfree(cpus);
         xfree(operations);
         xfree(tickets);

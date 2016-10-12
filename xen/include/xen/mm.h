@@ -534,27 +534,25 @@ unsigned long register_for_realloc(struct domain *d, unsigned long gfn,
 				   unsigned int order);
 
 /*
- * Unmap the given gfn with the given order making it ready for further
- * reallocation.
- * Return the amount of 0-order pages unmapped successfully.
+ * Unmap the given gfn making it ready for further reallocation.
+ * Return the amount of pages unmapped successfully.
  */
 unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
-			    unsigned int order, unsigned long ticket);
+			    unsigned long ticket);
 
 /*
- * Prepare to remap the given gfn with the given order making it available
- * to the guest. The reallocation is done lazily in batch.
+ * Prepare to remap the given gfn making it available to the guest.
+ * The reallocation is done lazily in batch.
  * Use the apply_realloc_gfn() function to force remapping.
- * Return the amount of 0-order pages prepared successfully.
+ * Return the amount of pages prepared successfully.
  */
 unsigned long remap_realloc(struct domain *d, unsigned long gfn,
-			    unsigned int order, unsigned int node,
-			    unsigned long ticket);
+			    unsigned int node, unsigned long ticket);
 
 unsigned long apply_realloc(struct domain *d);
 
 unsigned long remap_realloc_now(struct domain *d, unsigned long gfn,
-				unsigned int order, int fault);
+				int fault);
 
 
 /*

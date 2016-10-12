@@ -1172,7 +1172,7 @@ void p2m_mem_paging_populate(struct domain *d, unsigned long gfn)
     int rc;
 
     /* Check if it is first-touch paging */
-    if ( remap_realloc_now(d, gfn, 0, 0) )
+    if ( remap_realloc_now(d, gfn, 0) )
         return;
 
     /* We're paging. There should be a ring */

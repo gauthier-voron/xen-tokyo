@@ -1599,10 +1599,9 @@ static void __unmap_dealloc(struct domain *d)
 }
 
 unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
-                            unsigned int order, unsigned long ticket)
+                            unsigned long ticket)
 {
     unsigned long count = 0;
-    unsigned long cur, last = gfn + (1ul << order);
     unsigned long start = NOW();
 
     if (!d->realloc->enabled)
@@ -1618,10 +1617,8 @@ unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
     if (!d->realloc->enabled)
         goto out;
 
-    for (cur = gfn; cur < last; cur++) {
-        __unmap_prepare_one(d, cur, ticket);
-        count++;
-    }
+    __unmap_prepare_one(d, gfn, ticket);
+    count = 1;
 
     if (__atomic64_read(&d->realloc->ready_count) >= REALLOC_DELAY_TRIGGER)
         __unmap_dealloc(d);
@@ -1697,17 +1694,14 @@ static int __remap_realloc_one(struct domain *d, unsigned long gfn, int copy,
 }
 
 unsigned long remap_realloc(struct domain *d, unsigned long gfn,
-                            unsigned int order, unsigned int node,
-                            unsigned long ticket)
+                            unsigned int node, unsigned long ticket)
 {
     unsigned long start = NOW();
     unsigned long count = 0;
-    unsigned long cur, last = gfn + (1ul << order);
     unsigned long query, done;
 
-    for (cur = gfn; cur < last; cur++)
-        if (__remap_realloc_one(d, cur, 0, 0, node, ticket))
-            count++;
+    if (__remap_realloc_one(d, gfn, 0, 0, node, ticket))
+        count = 1;
 
     query = __atomic64_read(&d->realloc->apply_query);
     done = __atomic64_read(&d->realloc->apply_done);
@@ -1877,17 +1871,14 @@ unsigned long apply_realloc(struct domain *d)
     return count;
 }
 
-unsigned long remap_realloc_now(struct domain *d, unsigned long gfn,
-                                unsigned int order, int fault)
+unsigned long remap_realloc_now(struct domain *d, unsigned long gfn, int fault)
 {
     unsigned long start = NOW();
     unsigned long count = 0;
-    unsigned long cur, last = gfn + (1ul << order);
     unsigned int cpu = smp_processor_id();
 
-    for (cur = gfn; cur < last; cur++)
-        if (__remap_realloc_one(d, cur, 0, fault, cpu_to_node(cpu), 0))
-            count++;
+    if (__remap_realloc_one(d, gfn, 0, fault, cpu_to_node(cpu), 0))
+        count = 1;
 
     apply_realloc(d);
     current->domain->realloc->timers[smp_processor_id()][11] += NOW() - start;

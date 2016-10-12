@@ -1408,7 +1408,7 @@ static void svm_do_nested_pgfault(struct vcpu *v,
 #ifdef BIGOS_MEMORY_MOVE
     if ( is_memory_moved_gfn(v->domain, gfn, 1) )
         return;
-    if ( remap_realloc_now(v->domain, gfn, 0, 1) )
+    if ( remap_realloc_now(v->domain, gfn, 1) )
         return;
 #endif
 

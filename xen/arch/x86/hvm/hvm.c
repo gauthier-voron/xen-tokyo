@@ -4625,7 +4625,7 @@ static long hvm_grant_table_op(
 static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     long rc;
-    unsigned long i, start = NOW();
+    unsigned long i;
     uint64_t *pfns, *tickets;
     uint32_t *operations, *cpus;
     unsigned int nodes[NR_CPUS];
@@ -4644,7 +4644,7 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return rc;
     case XENMEM_page_mapping:
         rc = -1;
-        
+
         if ( copy_from_guest(&xmapping, arg, 1) )
             goto err;
 
@@ -4678,7 +4678,7 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
          * We go in reverse order to apply the latest operations only, the
          * older ones will be discarded.
          */
-        
+
         for (i = xmapping.size - 1; i < xmapping.size ; i--)
             if ( operations[i] == XENMEM_page_mapping_remap )
                 rc |= remap_realloc(current->domain, pfns[i], nodes[cpus[i]],
@@ -4696,9 +4696,6 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         xfree(operations);
         xfree(tickets);
     err:
-        current->domain->realloc->timers[smp_processor_id()][15] += NOW() - start;
-        current->domain->realloc->timers[smp_processor_id()][16] += 1;
-        
         return rc;
     }
     return do_memory_op(cmd, arg);

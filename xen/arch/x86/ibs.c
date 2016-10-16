@@ -102,7 +102,7 @@ static inline void handle_ibs_fetch(u64 ctrl, const struct cpu_user_regs *regs)
 static inline void handle_ibs_op(const struct cpu_user_regs *regs)
 {
     struct ibs_record record;
-
+    
     record.record_mode = IBS_RECORD_MODE_OP;
 
     rdmsr_safe(MSR_AMD64_IBSOPDATA, record.branch_infos);

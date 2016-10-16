@@ -90,7 +90,8 @@ static unsigned long __hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
         pfec[0] = PFEC_page_paged;
         if ( top_page )
             put_page(top_page);
-        p2m_mem_paging_populate(p2m->domain, cr3 >> PAGE_SHIFT);
+        if ( !abort )
+            p2m_mem_paging_populate(p2m->domain, cr3 >> PAGE_SHIFT);
         return INVALID_GFN;
     }
     if ( p2m_is_shared(p2mt) )
@@ -140,7 +141,8 @@ static unsigned long __hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
         {
             ASSERT(!p2m_is_nestedp2m(p2m));
             pfec[0] = PFEC_page_paged;
-            p2m_mem_paging_populate(p2m->domain, gfn_x(gfn));
+            if ( !abort )
+                p2m_mem_paging_populate(p2m->domain, gfn_x(gfn));
             return INVALID_GFN;
         }
         if ( p2m_is_shared(p2mt) )

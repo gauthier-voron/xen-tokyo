@@ -298,6 +298,7 @@ mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn,
     return mfn;
 }
 
+
 void __put_gfn(struct p2m_domain *p2m, unsigned long gfn)
 {
     if ( !p2m || !paging_mode_translate(p2m->domain) )
@@ -367,6 +368,9 @@ static struct page_info *__get_page_from_gfn_p2m(
         if ( !p2m_is_ram(*t) && !p2m_is_paging(*t) && !p2m_is_pod(*t) )
             return NULL;
     }
+
+    if ( abort )
+        return NULL;
 
     /* Slow path: take the write lock and do fixups */
     mfn = get_gfn_type_access(p2m, gfn, t, a, q, NULL);

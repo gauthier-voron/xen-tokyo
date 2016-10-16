@@ -420,7 +420,7 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 /* #define REALLOC_DELAY_TRIGGER     1024 */
 /* #define REALLOC_APPLY_TRIGGER     32 */
 #define REALLOC_DELAY_TRIGGER     0
-#define REALLOC_APPLY_TRIGGER     0
+#define REALLOC_APPLY_TRIGGER     32
 #define REALLOC_RMALL_TRIGGER     (1ul << 17)
 
 #define REALLOC_BATCH_SPIN_NS     25000
@@ -453,13 +453,8 @@ struct realloc_facility
 	uint32_t          *hypercall_cpus;        /* what cpu does the op */
 	uint32_t          *hypercall_operations;  /* what operation to do */
 
-	struct list_head   prepare_bucket[NR_CPUS];       /* batch unmapping */
-	spinlock_t         prepare_bucket_lock[NR_CPUS];
-
 	unsigned long      enabled;               /* remapping is enabled */
 	unsigned long      preparing;             /* # of preparing cores */
-	unsigned long      ready_count;           /* # of prepared tokens */
-	int                deallocing;            /* deallocing if !0 */
 
 	struct list_head   remap_bucket[NR_CPUS];       /* batch remapping */
 	spinlock_t         remap_bucket_lock[NR_CPUS];
@@ -471,8 +466,6 @@ struct realloc_facility
 	unsigned long      apply_query;      /* amount of ready to map */
 	unsigned long      apply_done;       /* amount of actually mapped */
 	unsigned long      apply_running;    /* some core is mapping if !0 */
-
-	unsigned long      timers[NR_CPUS][20];
 };
 
 struct realloc_facility *alloc_realloc_facility(void);
@@ -487,11 +480,10 @@ int enable_realloc_facility(struct domain *d, int enable);
 
 /* Automata states */
 #define REALLOC_STATE_MAP   0      /* currently mapped - normal state */
-#define REALLOC_STATE_READY 1      /* queued for mapping - still mapped */
-#define REALLOC_STATE_UBUSY 2      /* busy unmapping - transtory state */
-#define REALLOC_STATE_UNMAP 3      /* currently unmapped */
-#define REALLOC_STATE_DELAY 4      /* queued for remapping - still unmapped */
-#define REALLOC_STATE_BUSY  5      /* busy - transitory state */
+#define REALLOC_STATE_UBUSY 1      /* busy unmapping - transtory state */
+#define REALLOC_STATE_UNMAP 2      /* currently unmapped */
+#define REALLOC_STATE_DELAY 3      /* queued for remapping - still unmapped */
+#define REALLOC_STATE_BUSY  4      /* busy - transitory state */
 
 struct realloc_token
 {

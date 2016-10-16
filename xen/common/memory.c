@@ -1172,8 +1172,9 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
     unsigned int memflags;
     struct page_info *old = NULL;
     struct page_info *new = NULL;
+    struct realloc_token *token;
     unsigned long ret = INVALID_MFN;
-    int onode;
+    int onode, state;
 
     ASSERT(node < MAX_NUMNODES);
 
@@ -1181,10 +1182,18 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
     memflags = MEMF_bits(memflags);
     memflags = memflags | MEMF_node(node) | MEMF_exact_node;
 
+    read_lock(&d->realloc->token_tree_lock);
+    token = find_realloc_token(d->realloc, gfn);
+    read_unlock(&d->realloc->token_tree_lock);
+
+    state = cmpxchg(&token->state, REALLOC_STATE_MAP, REALLOC_STATE_BUSY);
+    if (state != REALLOC_STATE_MAP)
+        return INVALID_MFN;
+
     /* In success, deassign the old mfn from the domain */
     old = __memory_move_steal(d, gfn);                        /* get the gfn */
     if ( unlikely(old == NULL) )                         /* unless it failed */
-        goto fail_gfn;
+        goto out;
 
     onode = phys_to_nid(page_to_mfn(old) << PAGE_SHIFT);
     if ( onode == node && !(flags & MEMORY_MOVE_FORCE) )
@@ -1205,7 +1214,8 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
 
     put_gfn(d, gfn);                                          /* put the gfn */
 
-    return page_to_mfn(new);
+    ret = page_to_mfn(new);
+    goto out;
  fail_new:
     free_domheap_pages(new, 0);
  fail_old:
@@ -1213,8 +1223,11 @@ unsigned long memory_move(struct domain *d, unsigned long gfn,
     if ( assign_pages(d, old, 0, MEMF_no_refcount) )
         BUG();
     put_gfn(d, gfn);                                          /* put the gfn */
- fail_gfn:
-    return INVALID_MFN;
+ out:
+    state = cmpxchg(&token->state, REALLOC_STATE_BUSY, REALLOC_STATE_MAP);
+    if (state != REALLOC_STATE_BUSY)
+        BUG();
+    return ret;
 }
 
 
@@ -1238,7 +1251,7 @@ static inline void __atomic64_sub(unsigned long *dest, unsigned long sub)
 struct realloc_facility *alloc_realloc_facility(void)
 {
     struct realloc_facility *ptr = xzalloc(struct realloc_facility);
-    int cpu, i, node;
+    int cpu, node;
 
     if (ptr == NULL)
         return NULL;
@@ -1246,21 +1259,13 @@ struct realloc_facility *alloc_realloc_facility(void)
     rwlock_init(&ptr->token_tree_lock);
 
     for_each_online_cpu (cpu) {
-        INIT_LIST_HEAD(&ptr->prepare_bucket[cpu]);
-        spin_lock_init(&ptr->prepare_bucket_lock[cpu]);
-
         INIT_LIST_HEAD(&ptr->remap_bucket[cpu]);
         spin_lock_init(&ptr->remap_bucket_lock[cpu]);
         ptr->remap_last_try[cpu] = 0;
-
-        for (i=0; i<20; i++)
-            ptr->timers[cpu][i] = 0;
     }
 
     ptr->enabled = 0;
     ptr->preparing = 0;
-    ptr->ready_count = 0;
-    ptr->deallocing = 0;
 
     for (node = 0; node < MAX_NUMNODES; node++)
         ptr->page_pool_size[node] = 0;
@@ -1307,23 +1312,9 @@ void free_realloc_facility(struct realloc_facility *ptr)
 
 int enable_realloc_facility(struct domain *d, int enable)
 {
-    int i, cpu;
-    unsigned long sum;
-    
     if (enable) {
         d->realloc->enabled = 1;
-        
-        printk("dumping timers\n");
-        for (i=0; i<20; i++) {
-            sum = 0;
-            for_each_online_cpu (cpu) {
-                sum += d->realloc->timers[cpu][i];
-                d->realloc->timers[cpu][i] = 0;
-            }
-            if (sum != 0)
-                printk("timers[%02d] = %lu\n", i, sum);
-        }
-        
+                
         return 0;
     } else {
         /* Signal we are stopping, so other cores must stop unmapping */
@@ -1469,12 +1460,19 @@ static int __update_ticket(unsigned long *ticket, unsigned long new)
 }
 
 
+extern atomic_t carrefour_ibs_inhibitor;
+extern atomic_t carrefour_ibs_marker;
+
 static void __unmap_prepare_one(struct domain *d, unsigned long gfn,
                                 unsigned long ticket)
 {
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    struct page_info *old;
+    p2m_access_t access;
+    unsigned long mfn;
+    p2m_type_t type;
     struct realloc_token *token;
-    int state, cpu = smp_processor_id();
-    int nstate;
+    int state, nstate, flags, ret = 0;
 
     read_lock(&d->realloc->token_tree_lock);
     token = find_realloc_token(d->realloc, gfn);
@@ -1489,46 +1487,13 @@ static void __unmap_prepare_one(struct domain *d, unsigned long gfn,
         return;
     
     nstate = REALLOC_STATE_MAP;
-    state = cmpxchg(&token->state, REALLOC_STATE_MAP, REALLOC_STATE_BUSY);
+    state = cmpxchg(&token->state, REALLOC_STATE_MAP, REALLOC_STATE_UBUSY);
     if (state != REALLOC_STATE_MAP)
         return;
 
-    spin_lock(&d->realloc->prepare_bucket_lock[cpu]);
-
-    list_add(&token->bucket_cell, &d->realloc->prepare_bucket[cpu]);
-    __atomic64_add(&d->realloc->ready_count, 1);
-
-    spin_unlock(&d->realloc->prepare_bucket_lock[cpu]);
-
-    nstate = REALLOC_STATE_READY;
-    state = cmpxchg(&token->state, REALLOC_STATE_BUSY, nstate);
-    if (state != REALLOC_STATE_BUSY)
-        BUG();
-}
-
-static int __unmap_dealloc_one(struct domain *d, struct realloc_token *token)
-{
-    struct p2m_domain *p2m = p2m_get_hostp2m(d);
-    unsigned long gfn;
-    struct page_info *old;
-    int state, nstate, flags, ret = 0;
-    p2m_access_t access;
-    unsigned long mfn;
-    p2m_type_t type;
-
-    nstate = REALLOC_STATE_MAP;
-    state = cmpxchg(&token->state, REALLOC_STATE_READY, REALLOC_STATE_UBUSY);
-    if (state != REALLOC_STATE_READY)
-        goto err;
-
-    if (token->unmap_ticket < token->remap_ticket) {
-        printk("glitch\n");
-    /*     /\* printk("late abort %lu > %lu\n", token->remap_ticket, *\/ */
-    /*     /\*        token->unmap_ticket); *\/ */
-    /*     goto err_abort; */
-    }
-        
-    gfn = token->gfn;
+    atomic_inc(&carrefour_ibs_inhibitor);
+    while ( atomic_read(&carrefour_ibs_marker) )
+        ;
 
     flags = P2M_ALLOC | P2M_UNSHARE;
     mfn = mfn_x(get_gfn_type_access(p2m, gfn, &type, &access, flags, 0));
@@ -1552,57 +1517,18 @@ static int __unmap_dealloc_one(struct domain *d, struct realloc_token *token)
     ret = 1;
     nstate = REALLOC_STATE_UNMAP;
  err_gfn:
-    put_gfn(d, token->gfn);
+    put_gfn(d, gfn);
 
- /* err_abort: */
+    atomic_dec(&carrefour_ibs_inhibitor);
     state = cmpxchg(&token->state, REALLOC_STATE_UBUSY, nstate);
     if (state != REALLOC_STATE_UBUSY)
         BUG();
-
- err:
-    return ret;
-}
-
-static void __unmap_dealloc(struct domain *d)
-{
-    int cpu = smp_processor_id();
-    struct realloc_token *token;
-    struct list_head *cell;
-    unsigned long count = 0;
-    /* int state; */
-
-    /* state = cmpxchg(&d->realloc->deallocing, 0, 1); */
-    /* if (state != 0) */
-    /*     return; */
-
-    for_each_online_cpu (cpu) {
-        spin_lock(&d->realloc->prepare_bucket_lock[cpu]);
-
-        while (!list_empty(&d->realloc->prepare_bucket[cpu])) {
-            cell = d->realloc->prepare_bucket[cpu].next;
-            token = container_of(cell, struct realloc_token, bucket_cell);
-            
-            list_del(cell);
-            __unmap_dealloc_one(d, token);
-            
-            count++;
-        }
-
-        spin_unlock(&d->realloc->prepare_bucket_lock[cpu]);
-    }
-
-    __atomic64_sub(&d->realloc->ready_count, count);
-
-    /* state = cmpxchg(&d->realloc->deallocing, 1, 0); */
-    /* if (state != 1) */
-    /*     BUG(); */
 }
 
 unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
                             unsigned long ticket)
 {
     unsigned long count = 0;
-    unsigned long start = NOW();
 
     if (!d->realloc->enabled)
         return 0;
@@ -1620,13 +1546,8 @@ unsigned long unmap_realloc(struct domain *d, unsigned long gfn,
     __unmap_prepare_one(d, gfn, ticket);
     count = 1;
 
-    if (__atomic64_read(&d->realloc->ready_count) >= REALLOC_DELAY_TRIGGER)
-        __unmap_dealloc(d);
-
  out:
     __atomic64_sub(&d->realloc->preparing, 1);
-    current->domain->realloc->timers[smp_processor_id()][7] += NOW() - start;
-    current->domain->realloc->timers[smp_processor_id()][8] += 1;
     return count;
 }
 
@@ -1642,7 +1563,7 @@ static int __remap_realloc_one(struct domain *d, unsigned long gfn, int copy,
     read_lock(&d->realloc->token_tree_lock);
     token = find_realloc_token(d->realloc, gfn);
     read_unlock(&d->realloc->token_tree_lock);
-    
+
     if (token == NULL || token->gfn != gfn)
         goto err;
 
@@ -1657,27 +1578,21 @@ static int __remap_realloc_one(struct domain *d, unsigned long gfn, int copy,
     do {
         state = cmpxchg(&token->state, REALLOC_STATE_UNMAP,REALLOC_STATE_BUSY);
     } while (state == REALLOC_STATE_UBUSY ||
-             state == REALLOC_STATE_READY ||
-             state == REALLOC_STATE_DELAY ||
              state == REALLOC_STATE_BUSY);
 
     if (state != REALLOC_STATE_UNMAP) {
 
         /* If already mapped, then it's ok, do nothing */
-        if (state == REALLOC_STATE_MAP)
+        if (state == REALLOC_STATE_MAP || state == REALLOC_STATE_DELAY)
             goto out;
                 
-        /* if (fault && d->realloc->remap_last_try[cpu] != gfn) */
-        /*     goto out; */
-
         goto err;
     }
 
     token->node = node;
-    /* token->copy = copy; */
 
     spin_lock(&d->realloc->remap_bucket_lock[cpu]);
-    
+
     list_add(&token->bucket_cell, &d->realloc->remap_bucket[cpu]);
 
     state = cmpxchg(&token->state, REALLOC_STATE_BUSY, REALLOC_STATE_DELAY);
@@ -1687,7 +1602,7 @@ static int __remap_realloc_one(struct domain *d, unsigned long gfn, int copy,
     spin_unlock(&d->realloc->remap_bucket_lock[cpu]);
 
     __atomic64_add(&d->realloc->apply_query, 1);
- out:
+out:
     ret = 1;
  err:
     return ret;
@@ -1696,7 +1611,6 @@ static int __remap_realloc_one(struct domain *d, unsigned long gfn, int copy,
 unsigned long remap_realloc(struct domain *d, unsigned long gfn,
                             unsigned int node, unsigned long ticket)
 {
-    unsigned long start = NOW();
     unsigned long count = 0;
     unsigned long query, done;
 
@@ -1708,8 +1622,6 @@ unsigned long remap_realloc(struct domain *d, unsigned long gfn,
     if (done + REALLOC_APPLY_TRIGGER < query)
         apply_realloc(d);
     
-    current->domain->realloc->timers[smp_processor_id()][9] += NOW() - start;
-    current->domain->realloc->timers[smp_processor_id()][10] += 1;
     return count;
 }
 
@@ -1782,6 +1694,10 @@ static unsigned int __apply_realloc_one(struct domain *d,
     if ( unlikely(new == NULL) )
         goto fail_old;
 
+    atomic_inc(&carrefour_ibs_inhibitor);
+    while ( atomic_read(&carrefour_ibs_marker) )
+        ;
+    
     /* BIGOS_DEBUG_0 = 1; */
     raw_p2m_lock(p2m_get_hostp2m(d));
     /* BIGOS_DEBUG_0 = 0; */
@@ -1801,6 +1717,7 @@ static unsigned int __apply_realloc_one(struct domain *d,
         BUG();
     
  out:
+    atomic_dec(&carrefour_ibs_inhibitor);
     state = cmpxchg(&token->state, REALLOC_STATE_BUSY, REALLOC_STATE_MAP);
     if (state != REALLOC_STATE_BUSY)
         BUG();
@@ -1838,9 +1755,6 @@ unsigned long apply_realloc(struct domain *d)
         done = __atomic64_read(&d->realloc->apply_done);
         if (done >= query) {
             goto out;
-        } else if (waited < REALLOC_BATCH_SPIN_COUNT &&
-                   done + REALLOC_APPLY_TRIGGER >= query) {
-            continue;
         }
         
         running = cmpxchg(&d->realloc->apply_running, 0, 1);
@@ -1855,6 +1769,7 @@ unsigned long apply_realloc(struct domain *d)
             token = container_of(cell, struct realloc_token, bucket_cell);
     
             __apply_realloc_one(d, token);
+
             list_del(cell);
             cpudone++;
         }
@@ -1873,7 +1788,6 @@ unsigned long apply_realloc(struct domain *d)
 
 unsigned long remap_realloc_now(struct domain *d, unsigned long gfn, int fault)
 {
-    unsigned long start = NOW();
     unsigned long count = 0;
     unsigned int cpu = smp_processor_id();
 
@@ -1881,8 +1795,6 @@ unsigned long remap_realloc_now(struct domain *d, unsigned long gfn, int fault)
         count = 1;
 
     apply_realloc(d);
-    current->domain->realloc->timers[smp_processor_id()][11] += NOW() - start;
-    current->domain->realloc->timers[smp_processor_id()][12] += 1;
     return count;
 }
 

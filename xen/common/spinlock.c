@@ -14,6 +14,8 @@
 
 static atomic_t spin_debug __read_mostly = ATOMIC_INIT(0);
 
+extern atomic_t carrefour_ibs_marker;
+
 static void check_lock(struct lock_debug *debug)
 {
     int irq_safe = !local_irq_is_enabled();

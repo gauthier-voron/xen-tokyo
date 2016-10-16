@@ -55,6 +55,10 @@ static unsigned long find_gfn_for_vaddr(unsigned long vaddr)
     return gfn;
 }
 
+
+atomic_t carrefour_ibs_inhibitor;
+atomic_t carrefour_ibs_marker;
+
 // This function creates a struct ibs_op_sample struct that contains all IBS info
 // This structure is passed to rbtree_add_sample which stores pages info in a rbreee.
 static void handle_ibs_nmi(const struct ibs_record *record,
@@ -67,9 +71,14 @@ static void handle_ibs_nmi(const struct ibs_record *record,
 
     this_cpu(stats).total_interrupts++;
 
-    if ( current->domain->guest_type != guest_type_hvm )
+    if ( atomic_read(&carrefour_ibs_inhibitor) )
+        goto early_end;
+    atomic_inc(&carrefour_ibs_marker);
+    if ( atomic_read(&carrefour_ibs_inhibitor) )
         goto end;
 
+    if ( current->domain->guest_type != guest_type_hvm )
+        goto end;
 
     if ( !carrefour_module_options[IBS_CONSIDER_CACHES].value
          && (record->northbridge_infos & 7) == 0 )
@@ -96,7 +105,9 @@ static void handle_ibs_nmi(const struct ibs_record *record,
     rbtree_add_sample(0, record, smp_processor_id(), current->vcpu_id,
                       current->domain->domain_id);
 
-end:
+ end:
+    atomic_dec(&carrefour_ibs_marker);
+ early_end:
     time_stop = NOW();
     this_cpu(stats).time_spent_in_NMI += time_stop - time_start;
 }

@@ -114,6 +114,7 @@ static inline int mm_write_locked_by_me(mm_rwlock_t *l)
     return (l->locker == get_processor_id());
 }
 
+
 static inline void _mm_write_lock(mm_rwlock_t *l, const char *func, int level)
 {
     if ( !mm_write_locked_by_me(l) )

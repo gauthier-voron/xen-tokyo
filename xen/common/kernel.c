@@ -686,21 +686,39 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
     case HYPERCALL_BIGOS_ALLOCFT:
     {
+        unsigned long arr[2];
         unsigned long enable;
+        unsigned long domain;
         struct domain *d;
 
-        if ( copy_from_guest(&enable, arg, 1) ) {
+        if ( copy_from_guest(&arr[0], arg, 2) ) {
             printk("error on arg\n");
             return -1;
         }
 
-        d = get_domain_by_id(0);
-        while (d != NULL) {
-            if (enable_realloc_facility(d, (int) enable))
-                return hypercall_create_continuation(
-                    __HYPERVISOR_xen_version, "ih", HYPERCALL_BIGOS_ALLOCFT,
-                    arg);
-            d = d->next_in_list;
+        enable = arr[0];
+        domain = arr[1];
+
+        if (domain == 0) {
+            d = get_domain_by_id(0);
+            while (d != NULL) {
+                if (enable_realloc_facility(d, (int) enable))
+                    return hypercall_create_continuation(
+                        __HYPERVISOR_xen_version, "ih",
+                        HYPERCALL_BIGOS_ALLOCFT, arg);
+                d = d->next_in_list;
+            }
+        } else {
+            d = get_domain_by_id((domid_t) domain);
+            if (d != NULL) {
+                if (enable_realloc_facility(d, (int) enable))
+                    return hypercall_create_continuation(
+                        __HYPERVISOR_xen_version, "ih",
+                        HYPERCALL_BIGOS_ALLOCFT, arg);
+                d = d->next_in_list;
+            } else {
+                return -1;
+            }
         }
         
         return 0;
